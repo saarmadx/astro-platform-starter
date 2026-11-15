@@ -1,21 +1,78 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import ContextAlert from '../components/ContextAlert.astro';
-import Markdown from '../components/Markdown.astro';
 
-const explainer = `
-An Astro website can go way beyond static pages - on the right platform.
+const steps = [
+    { n: '01', title: 'Drop in a long video', text: 'Podcasts, interviews, talks or streams. It is processed in your browser, so big files are fine.' },
+    { n: '02', title: 'AI finds the best moments', text: 'Your video is transcribed, then the AI picks the clips with the strongest hooks and scores each one.' },
+    { n: '03', title: 'Tweak and export', text: 'Pick a caption style, adjust the framing and trim, then download vertical MP4s ready for Shorts.' }
+];
 
-Netlify supports not only [Streaming SSR](https://docs.astro.build/en/guides/server-side-rendering/#html-streaming) and fast [Edge Middleware](https://docs.astro.build/en/guides/middleware/), but also [on-demand revalidation](https://www.netlify.com/blog/cache-tags-and-purge-api-on-netlify/) and [stale-while-revalidate](https://www.netlify.com/blog/swr-and-fine-grained-cache-control/). 
-Any page or data can be rebuilt only when needed, without site visitors ever getting a performance hit.
-`;
+const features = [
+    { title: 'Hook-first picks', text: 'Each clip starts on a strong line and ends on a complete thought, so it works on its own.' },
+    { title: 'Word-by-word captions', text: 'Animated captions with a highlighted active word, burned into the video. Four styles.' },
+    { title: 'Vertical reframing', text: 'Crops 16:9 footage to 9:16 and lets you slide the frame to follow the speaker.' },
+    { title: 'Performance score', text: 'An honest 0–100 score per clip so you post the strongest moments first.' },
+    { title: 'Titles and hashtags', text: 'A unique title, description and hashtags written for every clip, ready to copy.' },
+    { title: 'Private by design', text: 'Your video never leaves your device. Only the audio is sent for transcription.' }
+];
 ---
 
-<Layout title="Welcome to Astro.">
-    <ContextAlert class="mb-8" />
-    <h1 class="mb-10">Netlify Platform Starter for Astro</h1>
-    <Markdown content={explainer} class="mb-10 text-lg" />
-    <p>
-        <a href="https://docs.netlify.com/frameworks/astro/" class="btn btn-lg sm:min-w-64">Read the Docs</a>
-    </p>
+<Layout title="Clipsmith · Turn long videos into Shorts with AI">
+    <section class="grid items-center gap-10 py-10 sm:py-16 lg:grid-cols-[1.1fr_0.9fr]">
+        <div>
+            <p class="mb-4 inline-block rounded-full border border-accent/40 bg-accent/10 px-3 py-1 text-sm font-semibold text-accent">AI clip maker for creators</p>
+            <h1>One long video in.<br /><span class="text-accent">Ten Shorts out.</span></h1>
+            <p class="mt-5 max-w-xl text-lg text-muted">
+                Clipsmith finds the most engaging moments in your podcasts and videos, crops them to vertical, and adds animated captions. Ready for YouTube Shorts, TikTok and Reels.
+            </p>
+            <div class="mt-8 flex flex-wrap gap-3">
+                <a href="/studio" class="btn-accent text-lg">Start clipping →</a>
+                <a href="#how" class="btn-ghost !py-3">See how it works</a>
+            </div>
+        </div>
+        <div class="relative mx-auto flex w-full max-w-md justify-center gap-4" aria-hidden="true">
+            {[0, 1, 2].map((i) => (
+                <div class={`panel relative aspect-[9/16] w-1/3 overflow-hidden ${i === 1 ? '-translate-y-6' : 'translate-y-4'}`}>
+                    <div class="absolute inset-0 bg-gradient-to-b from-white/10 to-transparent" />
+                    <div class="absolute top-3 left-3 rounded-md bg-accent px-1.5 text-xs font-bold text-ink">{[92, 88, 81][i]}</div>
+                    <div class="absolute inset-x-2 bottom-1/4 text-center text-[11px] font-extrabold leading-tight sm:text-sm" style="font-family: 'Montserrat ExtraBold'">
+                        {['THIS CHANGED', 'NOBODY TALKS', 'THE REAL'][i]} <span class="text-accent">{['EVERYTHING', 'ABOUT THIS', 'SECRET'][i]}</span>
+                    </div>
+                </div>
+            ))}
+        </div>
+    </section>
+
+    <section id="how" class="py-12">
+        <h2 class="text-3xl font-bold">How it works</h2>
+        <div class="mt-6 grid gap-4 md:grid-cols-3">
+            {steps.map((s) => (
+                <div class="panel p-6">
+                    <p class="font-mono text-sm text-accent">{s.n}</p>
+                    <p class="mt-2 text-lg font-bold">{s.title}</p>
+                    <p class="mt-2 text-muted">{s.text}</p>
+                </div>
+            ))}
+        </div>
+    </section>
+
+    <section class="py-12">
+        <h2 class="text-3xl font-bold">Everything a clip needs</h2>
+        <div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {features.map((f) => (
+                <div class="panel p-6">
+                    <p class="font-bold">{f.title}</p>
+                    <p class="mt-2 text-sm text-muted">{f.text}</p>
+                </div>
+            ))}
+        </div>
+    </section>
+
+    <section class="panel mt-8 flex flex-col items-start gap-4 p-8 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+            <p class="text-2xl font-bold">Ready to make your first Short?</p>
+            <p class="text-muted">No sign-up. Drop a video and go.</p>
+        </div>
+        <a href="/studio" class="btn-accent">Open the studio →</a>
+    </section>
 </Layout>

@@ -1,78 +1,61 @@
 @import 'tailwindcss';
 
+@font-face {
+    font-family: 'Montserrat ExtraBold';
+    src: url('/fonts/Montserrat-ExtraBold.ttf') format('truetype');
+    font-display: swap;
+}
+
 @theme {
-    --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-    --color-primary: #f67280;
-    --color-primary-content: #101828;
-    --color-complementary: #355c7d;
-    --background-image-noise: linear-gradient(
-            to bottom,
-            color-mix(in oklab, var(--color-gray-950) 0%, transparent),
-            color-mix(in oklab, var(--color-gray-950) 100%, transparent)
-        ),
-        url('/images/noise.png');
+    --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+    --color-ink: #0b0d10;
+    --color-surface: #14171c;
+    --color-accent: #c8ff3d;
+    --color-muted: #9aa3ad;
 }
 
 @layer base {
+    body {
+        background: var(--color-ink);
+    }
+
     h1 {
-        @apply text-4xl font-bold tracking-tight sm:text-5xl;
-    }
-
-    h2 {
-        @apply text-2xl font-bold sm:text-3xl;
-    }
-
-    a:not(.btn) {
-        @apply underline transition hover:opacity-80;
-    }
-
-    pre {
-        @apply p-6 overflow-x-auto rounded-lg;
-    }
-
-    :not(pre) > code {
-        @apply px-1 py-0.5 font-mono rounded bg-gray-900 text-primary;
-        font-size: 0.9em;
+        @apply text-4xl font-extrabold tracking-tight sm:text-6xl;
     }
 }
 
 @layer components {
-    .markdown {
-        > * {
-            @apply my-6;
-        }
-
-        :where(h1, h2) {
-            @apply mt-12 mb-6;
-        }
-
-        > :first-child {
-            @apply mt-0;
-        }
-
-        > :last-child {
-            @apply mb-0;
-        }
+    .panel {
+        @apply rounded-2xl border border-white/10 bg-surface;
     }
 
-    .btn {
-        @apply inline-flex items-center justify-center gap-2 bg-primary text-primary-content cursor-pointer text-center font-semibold no-underline transition-colors;
-        padding: var(--btn-py, 0.875rem) var(--btn-px, 1.25rem);
-        font-size: var(--btn-font-size, 0.875rem);
-        border-radius: var(--btn-border-radius, 0.25rem);
-
-        &:hover {
-            @apply bg-primary/85;
-        }
-
-        &:disabled {
-            @apply text-gray-400 bg-gray-700;
-        }
+    .input {
+        @apply w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-white outline-none transition focus:border-accent/70;
     }
 
-    .btn-lg {
-        --btn-font-size: 1.125rem;
-        --btn-px: 1.5rem;
-        --btn-py: 1.125rem;
+    .btn-accent {
+        @apply inline-flex items-center justify-center gap-2 rounded-xl bg-accent px-5 py-3 font-bold text-ink no-underline transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40;
+    }
+
+    .btn-ghost {
+        @apply inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold text-white no-underline transition hover:bg-white/[0.06];
+    }
+
+    .caption-pop span,
+    .caption-boxed span {
+        text-shadow:
+            0 0 3px #000,
+            2px 2px 0 #000,
+            -2px -2px 0 #000,
+            2px -2px 0 #000,
+            -2px 2px 0 #000;
+    }
+
+    .caption-boxed {
+        @apply rounded-lg bg-black/60 px-2 py-1;
+    }
+
+    .caption-clean span {
+        text-shadow: 0 2px 6px rgb(0 0 0 / 0.8);
     }
 }

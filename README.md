@@ -1,51 +1,43 @@
-# Astro on Netlify Platform Starter
+# Clipsmith
 
-[Live Demo](https://astro-platform-starter.netlify.app/)
+Turn long videos (podcasts, interviews, talks, streams) into short vertical clips with animated captions, ready for YouTube Shorts, TikTok and Reels.
 
-A modern starter based on Astro.js, Tailwind, and [Netlify Core Primitives](https://docs.netlify.com/core/overview/#develop) (Edge Functions, Image CDN, Blob Store).
+## How it works
 
-## Astro Commands
+1. **Upload**: the video stays in the browser. [ffmpeg.wasm](https://ffmpegwasm.netlify.app/) pulls out the audio in 10-minute mp3 chunks.
+2. **Transcribe**: `/api/transcribe` sends each audio chunk to OpenAI Whisper and gets word-level timestamps.
+3. **Pick clips**: `/api/highlights` sends the timestamped transcript to Claude, which returns the best moments with a hook, a 0–100 score, a title, a description and hashtags.
+4. **Edit**: a live 9:16 preview with captions; trim the start and end, choose a caption style and highlight colour, and slide the crop to follow the speaker.
+5. **Export**: ffmpeg.wasm cuts the clip, crops it to 720×1280 and burns in word-by-word captions. The MP4 downloads straight from the browser.
 
-All commands are run from the root of the project, from a terminal:
+## Setup
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
-
-## Deploying to Netlify
-
-[![Deploy to Netlify](https://www.netlify.com/img/deploy/button.svg)](https://app.netlify.com/start/deploy?repository=https://github.com/netlify-templates/astro-platform-starter)
-
-## Developing Locally
-
-| Prerequisites                                                                |
-| :--------------------------------------------------------------------------- |
-| [Node.js](https://nodejs.org/) v18.14+.                                      |
-| (optional) [nvm](https://github.com/nvm-sh/nvm) for Node version management. |
-
-1. Clone this repository, then run `npm install` in its root directory.
-
-2. For the starter to have full functionality locally (e.g. edge functions, blob store), please ensure you have an up-to-date version of Netlify CLI. Run:
-
-```
-npm install netlify-cli@latest -g
+```bash
+npm install
+cp .env.example .env   # then fill in the keys
+npm run dev            # http://localhost:4321
 ```
 
-3. Link your local repository to the deployed Netlify site. This will ensure you're using the same runtime version for both local development and your deployed site.
+| Variable | What it's for |
+| --- | --- |
+| `OPENAI_API_KEY` | Speech-to-text (Whisper) |
+| `ANTHROPIC_API_KEY` | Picking the best clips (Claude) |
+| `APP_ACCESS_CODE` | Optional. If set, the studio asks for this code so strangers can't spend your API credits |
 
-```
-netlify link
-```
+On Netlify, add the same variables under **Site configuration → Environment variables**.
 
-4. Then, run the Astro.js development server via Netlify CLI:
+## Project layout
 
-```
-netlify dev
-```
+- `src/pages/index.astro`: landing page
+- `src/pages/studio.astro` + `src/components/Studio.tsx`: the clip editor
+- `src/lib/video.ts`: ffmpeg.wasm audio extraction and clip rendering
+- `src/lib/captions.ts`: animated `.ass` caption builder
+- `src/pages/api/transcribe.ts`, `src/pages/api/highlights.ts`: server routes
+- `scripts/copy-ffmpeg.mjs`: copies the ffmpeg core into `public/ffmpeg` before `dev` and `build`
 
-If your browser doesn't navigate to the site automatically, visit [localhost:8888](http://localhost:8888).
+## Limits and ideas for later
+
+- Rendering runs on the viewer's device, so it is slower than a server (about 1–2 minutes per clip).
+- The crop position is manual. Automatic face tracking would be the next upgrade.
+- No YouTube-link import: downloading from YouTube breaks YouTube's terms. Upload files you own or have permission to use.
+- Next steps could include user accounts, saved projects, B-roll and emoji inserts, and batch export.
