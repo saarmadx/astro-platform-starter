@@ -1,0 +1,71 @@
+CLIPSMITH - HOW TO RUN IT ON YOUR COMPUTER
+==========================================
+
+WHAT YOU NEED (one time)
+------------------------
+1) Node.js
+   Go to https://nodejs.org, download the "LTS" version and install it
+   (click Next / Continue through the installer).
+
+2) Two API keys (both are pay-as-you-go; a typical video costs a few cents)
+   - OpenAI key  -> makes the captions from speech
+       https://platform.openai.com/api-keys  -> "Create new secret key"
+       (add a small amount of credit under Settings > Billing)
+   - Anthropic key -> picks the best / funniest clips
+       https://console.anthropic.com  -> "API Keys" -> "Create Key"
+       (add a small amount of credit under Billing)
+   Keep these keys private. Never share them or post them online.
+
+
+START IT
+--------
+1) Unzip this folder (right-click clipsmith.zip > Extract All > Extract).
+
+2) Windows: double-click  start-windows.bat
+   (if "Windows protected your PC" appears: click More info > Run anyway)
+
+   Mac: open the Terminal app, type  cd  and a space, drag this folder into
+   the Terminal window, press Enter, then type  bash start-mac.sh  and press Enter.
+
+3) THE FIRST TIME ONLY, it asks for your two keys:
+   - Copy your OpenAI key, RIGHT-CLICK inside the black window to paste it, press Enter.
+   - Copy your Anthropic key, RIGHT-CLICK to paste it, press Enter.
+   (On Mac, paste with Cmd + V.)
+   It saves them for you. To change them later, double-click change-keys.bat.
+
+4) It then installs what it needs (a few minutes the first time) and opens
+   your browser. If it doesn't, open Chrome or Edge and go to:
+       http://localhost:4321/studio
+
+Keep the black window open while you use the app. Close it to stop.
+Next time, just double-click start-windows.bat again.
+
+
+MAKING CLIPS
+------------
+1) Drop in a video (start with a 5-10 minute one for your first try).
+2) Pick "Funny" (or another type), the clip length, 9:16 and a caption style.
+3) Click "Get clips in 1 click". Keep the tab open while it works:
+   extracting audio -> captions -> AI picks clips -> finding the speaker.
+4) Click a clip to edit: trim it, fix any wrong caption word (double-click it in
+   the transcript), change the caption style, framing or colours.
+5) Export tab -> "Export MP4". 720p takes about a minute per clip.
+   "Export all" on the clip grid downloads every clip.
+6) Optional: Brand kit (left menu) to add your logo to every clip.
+
+Projects are saved in your browser. To keep editing an old project later,
+open it and select the same video file again when asked.
+
+
+IF SOMETHING GOES WRONG
+-----------------------
+- "Transcription failed (401)" or "AI request failed (401)", or "key is not set":
+  a key is wrong or missing. Double-click change-keys.bat and paste them again.
+- "(429)" or "insufficient quota": add credit to that account, or wait a minute.
+- 'npm' is not recognized / command not found: Node.js is not installed;
+  install it, then restart your computer and try again.
+- The page is blank or stuck: refresh it. Use Chrome or Edge.
+- Export is very slow: use 720p, and keep the tab visible.
+Send a screenshot of any error message and it can be fixed.
+
+Only clip videos you own or have permission to use.
