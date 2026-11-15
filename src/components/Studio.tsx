@@ -3,6 +3,7 @@ import { findClips, transcribeVideo } from '../lib/api';
 import { findAudioEvents } from '../lib/audio';
 import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
 import { analyseClip } from '../lib/faces';
+import { cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
 import type { Brand, Clip, Project, StyleSettings } from '../lib/types';
 import BrandKit from './BrandKit';
@@ -50,7 +51,10 @@ export default function Studio() {
     projectsRef.current = projects;
 
     useEffect(() => {
-        listProjects().then(setProjects).catch(() => {});
+        // older projects may hold speech-model glitches (long repeat runs); clean them on load
+        listProjects()
+            .then((ps) => setProjects(ps.map((p) => (p.transcript ? { ...p, transcript: { ...p.transcript, words: cleanWords(p.transcript.words) } } : p))))
+            .catch(() => {});
         setBrandState(loadBrand());
         try {
             setAccessCodeState(localStorage.getItem(ACCESS_KEY) ?? '');

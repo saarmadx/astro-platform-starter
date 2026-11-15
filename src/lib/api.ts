@@ -1,5 +1,5 @@
 import { ENERGY_STEP, findAudioEvents, loudness } from './audio';
-import { decode16k, segmentsFromWords, transcribeChunk, usingGpu } from './localAsr';
+import { cleanWords, decode16k, segmentsFromWords, transcribeChunk, usingGpu } from './localAsr';
 import { extractAudioChunks } from './video';
 import type { AsrQuality, Clip, Project, Transcript, Word } from './types';
 
@@ -102,6 +102,7 @@ async function transcribeLocally(
         result.words.push(...words);
         onChunkDone?.({ words: result.words, db: result.energy ? result.energy.db : null, nextChunk: i + 1 });
     }
+    result.words = cleanWords(result.words);
     result.segments = segmentsFromWords(result.words);
     onStatus('Captions ready', 1);
     return result;

@@ -118,3 +118,47 @@ export function segmentsFromWords(words: Word[]): Segment[] {
     flush();
     return segs;
 }
+
+const normWord = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
+
+/**
+ * Cleans up common speech-model glitches: the model sometimes gets stuck repeating a word
+ * or phrase ("okay okay okay…", "give it to me give it to me…") with near-zero timings, and
+ * occasionally returns times that run backwards. Real speech rarely repeats a phrase more
+ * than a few times in a row, so long repeat runs are cut down to 2.
+ */
+export function cleanWords(input: Word[]): Word[] {
+    // drop broken timings and sort
+    let words = input
+        .filter((w) => w.text.trim() && isFinite(w.start) && isFinite(w.end))
+        .map((w) => ({ ...w, end: Math.max(w.end, w.start + 0.05) }))
+        .sort((a, b) => a.start - b.start);
+
+    // collapse repeated phrases of 1 to 8 words occurring 3+ times in a row
+    for (let n = 1; n <= 8; n++) {
+        const out: Word[] = [];
+        let i = 0;
+        while (i < words.length) {
+            const phrase = words.slice(i, i + n).map((w) => normWord(w.text)).join(' ');
+            let reps = 1;
+            if (phrase && i + n <= words.length) {
+                while (i + (reps + 1) * n <= words.length && words.slice(i + reps * n, i + (reps + 1) * n).map((w) => normWord(w.text)).join(' ') === phrase) reps++;
+            }
+            if (reps >= 3) {
+                out.push(...words.slice(i, i + 2 * n)); // keep two copies, like natural speech
+                i += reps * n;
+            } else {
+                out.push(words[i]);
+                i++;
+            }
+        }
+        words = out;
+    }
+
+    // a word can't start before the previous one has started
+    for (let i = 1; i < words.length; i++) {
+        if (words[i].start < words[i - 1].start) words[i] = { ...words[i], start: words[i - 1].start };
+        if (words[i - 1].end > words[i].start + 0.5) words[i - 1] = { ...words[i - 1], end: Math.max(words[i - 1].start + 0.05, words[i].start) };
+    }
+    return words;
+}
