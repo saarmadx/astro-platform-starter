@@ -88,13 +88,22 @@ export default function Studio() {
                 p = { ...p, status: 'transcribing' };
                 update(p);
                 setStep(p.id, 'Loading video engine', 0.02);
-                const transcript = await transcribeVideo(file, p.duration, accessCode, (label, r) => setStep(p.id, label, 0.05 + r * 0.45), {
-                    asr: o.asr ?? 'local',
-                    language: o.language ?? 'english',
-                    quality: o.asrQuality ?? 'fast'
-                });
+                const key = `${o.asr ?? 'local'}|${o.language ?? 'english'}|${o.asrQuality ?? 'fast'}`;
+                const resume = p.partial && p.partial.key === key ? p.partial : undefined;
+                const transcript = await transcribeVideo(
+                    file,
+                    p.duration,
+                    accessCode,
+                    (label, r) => setStep(p.id, label, 0.05 + r * 0.45),
+                    { asr: o.asr ?? 'local', language: o.language ?? 'english', quality: o.asrQuality ?? 'fast' },
+                    resume,
+                    (state) => {
+                        p = { ...p, partial: { key, ...state } };
+                        update(p);
+                    }
+                );
                 if (transcript.words.length === 0) throw new Error('No speech was found in this video. Check that the video language is set correctly.');
-                p = { ...p, transcript };
+                p = { ...p, transcript, partial: undefined };
                 update(p);
             }
             const picker = o.picker ?? 'laughs';
@@ -259,7 +268,7 @@ export default function Studio() {
 
                 <main className="mx-auto w-full max-w-7xl grow px-4 py-6 sm:px-8">
                     {view.name === 'home' && (
-                        <Home projects={projects} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} accessCode={accessCode} setAccessCode={setAccessCode} />
+                        <Home projects={projects} running={progress} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} accessCode={accessCode} setAccessCode={setAccessCode} />
                     )}
                     {view.name === 'brand' && <BrandKit brand={brand} setBrand={setBrand} />}
                     {view.name === 'project' && current && (

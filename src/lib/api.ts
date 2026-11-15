@@ -1,7 +1,9 @@
 import { ENERGY_STEP, findAudioEvents, loudness } from './audio';
-import { decode16k, segmentsFromWords, transcribeChunk } from './localAsr';
+import { decode16k, segmentsFromWords, transcribeChunk, usingGpu } from './localAsr';
 import { extractAudioChunks } from './video';
-import type { Clip, Project, Transcript } from './types';
+import type { AsrQuality, Clip, Project, Transcript, Word } from './types';
+
+export type LocalResume = { words: Word[]; db: number[] | null; nextChunk: number };
 
 function headers(accessCode: string): Record<string, string> {
     return accessCode ? { 'x-access-code': accessCode } : {};
@@ -21,9 +23,11 @@ export async function transcribeVideo(
     duration: number,
     accessCode: string,
     onStatus: (label: string, ratio: number) => void,
-    engine: { asr: 'local' | 'openai'; language: string; quality: 'fast' | 'accurate' } = { asr: 'local', language: 'english', quality: 'fast' }
+    engine: { asr: 'local' | 'openai'; language: string; quality: AsrQuality } = { asr: 'local', language: 'english', quality: 'fast' },
+    resume?: LocalResume,
+    onChunkDone?: (state: LocalResume) => void
 ): Promise<Transcript> {
-    if (engine.asr === 'local') return transcribeLocally(file, duration, onStatus, engine.language, engine.quality);
+    if (engine.asr === 'local') return transcribeLocally(file, duration, onStatus, engine.language, engine.quality, resume, onChunkDone);
     const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r));
     const result: Transcript = { language: 'unknown', words: [], segments: [], energy: { step: ENERGY_STEP, db: [] } };
     for (let i = 0; i < chunks.length; i++) {
@@ -58,13 +62,21 @@ async function transcribeLocally(
     duration: number,
     onStatus: (label: string, ratio: number) => void,
     language: string,
-    quality: 'fast' | 'accurate'
+    quality: AsrQuality,
+    resume?: LocalResume,
+    onChunkDone?: (state: LocalResume) => void
 ): Promise<Transcript> {
     const STEP = 120;
     const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r * 0.15), STEP);
-    const result: Transcript = { language, words: [], segments: [], energy: { step: ENERGY_STEP, db: [] } };
+    const first = resume && resume.nextChunk < chunks.length ? resume.nextChunk : 0;
+    const result: Transcript = {
+        language,
+        words: first ? [...resume!.words] : [],
+        segments: [],
+        energy: first ? (resume!.db ? { step: ENERGY_STEP, db: [...resume!.db] } : undefined) : { step: ENERGY_STEP, db: [] }
+    };
     const started = Date.now();
-    for (let i = 0; i < chunks.length; i++) {
+    for (let i = first; i < chunks.length; i++) {
         try {
             const db = await loudness(chunks[i].blob);
             const expected = Math.round((chunks[i].offset - result.energy!.db.length * ENERGY_STEP) / ENERGY_STEP);
@@ -75,8 +87,10 @@ async function transcribeLocally(
         }
         const ratio = 0.15 + (0.85 * i) / chunks.length;
         let label = `Making captions (free, on your PC): part ${i + 1} of ${chunks.length}`;
-        if (i > 0) {
-            const perChunk = (Date.now() - started) / i;
+        if (usingGpu === true) label += ' · using your graphics card';
+        if (usingGpu === false) label += ' · using your processor (slower)';
+        if (i > first) {
+            const perChunk = (Date.now() - started) / (i - first);
             const mins = Math.ceil((perChunk * (chunks.length - i)) / 60000);
             label += ` · about ${mins} min left`;
         }
@@ -86,6 +100,7 @@ async function transcribeLocally(
             if (total > 0) onStatus(`Downloading the free speech model, first time only (${Math.round(loaded / 1048576)} of ${Math.round(total / 1048576)} MB)`, ratio);
         });
         result.words.push(...words);
+        onChunkDone?.({ words: result.words, db: result.energy ? result.energy.db : null, nextChunk: i + 1 });
     }
     result.segments = segmentsFromWords(result.words);
     onStatus('Captions ready', 1);

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { TEMPLATES } from '../lib/templates';
 import { LANGUAGES } from '../lib/localAsr';
-import type { Aspect, AsrEngine, ContentMode, Picker, Project } from '../lib/types';
+import type { Aspect, AsrEngine, AsrQuality, ContentMode, Picker, Project } from '../lib/types';
 import { TemplateSwatch } from './ui';
 
 export type NewProjectInput = {
@@ -41,13 +41,14 @@ const ASPECTS: { id: Aspect; label: string; hint: string }[] = [
 
 type Props = {
     projects: Project[];
+    running: Record<string, { label: string; ratio: number }>;
     onCreate: (input: NewProjectInput) => Promise<void>;
     onOpen: (id: string) => void;
     accessCode: string;
     setAccessCode: (c: string) => void;
 };
 
-export default function Home({ projects, onCreate, onOpen, accessCode, setAccessCode }: Props) {
+export default function Home({ projects, running, onCreate, onOpen, accessCode, setAccessCode }: Props) {
     const [file, setFile] = useState<File | null>(null);
     const [length, setLength] = useState('auto');
     const [maxClips, setMaxClips] = useState(10);
@@ -58,7 +59,7 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
     const [picker, setPicker] = useState<Picker>('chat');
     const [asr, setAsr] = useState<AsrEngine>('local');
     const [language, setLanguage] = useState('english');
-    const [asrQuality, setAsrQuality] = useState<'fast' | 'accurate'>('fast');
+    const [asrQuality, setAsrQuality] = useState<AsrQuality>('fast');
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
 
@@ -190,11 +191,11 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
                                 {asr === 'local' && (
                                     <Segmented
                                         value={asrQuality}
-                                        onChange={(v) => setAsrQuality(v as 'fast' | 'accurate')}
-                                        items={[{ id: 'fast', label: 'Faster' }, { id: 'accurate', label: 'More accurate (slower)' }]}
+                                        onChange={(v) => setAsrQuality(v as AsrQuality)}
+                                        items={[{ id: 'fastest', label: 'Fastest' }, { id: 'fast', label: 'Balanced' }, { id: 'accurate', label: 'Most accurate' }]}
                                     />
                                 )}
-                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 80–250 MB).</p>
+                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40–250 MB). On a slower PC or a long video, choose Fastest.</p>
                             </div>
                         </details>
                         <details className="text-sm">
@@ -217,7 +218,7 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
                                 <div className="p-3">
                                     <p className="truncate font-semibold">{p.name}</p>
                                     <p className="text-xs text-muted">
-                                        {p.status === 'ready' ? `${p.clips.length} clips` : p.status === 'error' ? 'Needs attention' : 'Processing…'} · {new Date(p.createdAt).toLocaleDateString()}
+                                        {statusText(p, running[p.id])} · {new Date(p.createdAt).toLocaleDateString()}
                                     </p>
                                 </div>
                             </button>
@@ -248,4 +249,12 @@ export function Segmented({ value, onChange, items }: { value: string; onChange:
             ))}
         </div>
     );
+}
+
+function statusText(p: Project, run?: { label: string; ratio: number }) {
+    if (p.status === 'ready') return `${p.clips.length} clips`;
+    if (p.status === 'error') return 'Needs attention';
+    if (p.status === 'awaiting-paste') return 'Your turn: paste Claude’s answer';
+    if (run) return `Working… ${Math.round(run.ratio * 100)}%`;
+    return 'Stopped – open to continue';
 }

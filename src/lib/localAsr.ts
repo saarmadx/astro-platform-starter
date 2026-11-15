@@ -1,7 +1,11 @@
 // Free transcription: decodes each audio chunk and runs Whisper in a web worker.
 import type { Segment, Word } from './types';
 
-export type AsrQuality = 'fast' | 'accurate';
+import type { AsrQuality } from './types';
+export type { AsrQuality };
+
+/** true when the graphics card is used (much faster), false for the processor, null before loading */
+export let usingGpu: boolean | null = null;
 
 export const LANGUAGES: { id: string; label: string }[] = [
     { id: 'english', label: 'English' },
@@ -24,7 +28,7 @@ export const LANGUAGES: { id: string; label: string }[] = [
 ];
 
 export function modelFor(language: string, quality: AsrQuality): string {
-    const size = quality === 'accurate' ? 'small' : 'base';
+    const size = quality === 'accurate' ? 'small' : quality === 'fastest' ? 'tiny' : 'base';
     return language === 'english' ? `Xenova/whisper-${size}.en` : `Xenova/whisper-${size}`;
 }
 
@@ -58,6 +62,10 @@ export function transcribeChunk(
     return new Promise((resolve, reject) => {
         const onMsg = (e: MessageEvent) => {
             const m = e.data;
+            if (m.type === 'ready') {
+                usingGpu = !!m.gpu;
+                return;
+            }
             if (m.type === 'download') {
                 downloads[m.file] = { loaded: m.loaded, total: m.total };
                 const all = Object.values(downloads);

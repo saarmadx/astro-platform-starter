@@ -143,6 +143,21 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     <p className="text-xs text-muted">Keep this tab open. A one-hour video usually takes a few minutes.</p>
                 </div>
             )}
+            {(project.status === 'transcribing' || project.status === 'clipping') && !progress && (
+                <section className="panel flex flex-wrap items-center justify-between gap-3 border-amber-300/40 p-5">
+                    <div>
+                        <p className="font-semibold">Processing stopped</p>
+                        <p className="text-sm text-muted">
+                            The page was closed or refreshed while it was working.
+                            {project.partial ? ` Captions are saved up to ${Math.round((project.partial.nextChunk * 120) / 60)} min, so it continues from there.` : ''}
+                        </p>
+                    </div>
+                    <button className="btn-accent !py-2" disabled={!video} onClick={() => onRegenerate(project.options)}>
+                        {video ? 'Continue' : 'Select the video first (above)'}
+                    </button>
+                </section>
+            )}
+
             {project.status === 'awaiting-paste' && project.transcript && !progress && <PastePanel project={project} onPaste={onPaste} />}
 
             {(error || batchError) && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{error || batchError}</p>}

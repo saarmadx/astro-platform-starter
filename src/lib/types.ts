@@ -9,6 +9,7 @@ export type ContentMode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-take
 export type AsrEngine = 'local' | 'openai';
 /** how clips are picked: free laugh detector, free via Claude chat copy/paste, or Claude API (paid) */
 export type Picker = 'laughs' | 'chat' | 'api';
+export type AsrQuality = 'fastest' | 'fast' | 'accurate';
 
 export type SubScores = { hook: number; flow: number; value: number; shareability: number };
 
@@ -77,9 +78,11 @@ export type Project = {
         topic: string;
         mode?: ContentMode;
         asr?: AsrEngine;
-        asrQuality?: 'fast' | 'accurate';
+        asrQuality?: AsrQuality;
         language?: string;
         picker?: Picker;
     };
     thumb?: string;
+    /** captions finished so far, so a stopped run can continue where it left off */
+    partial?: { key: string; words: Word[]; db: number[] | null; nextChunk: number };
 };
