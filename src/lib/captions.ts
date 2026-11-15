@@ -1,15 +1,74 @@
-import type { CaptionStyle, Word } from './types';
+import { getTemplate, type CaptionTemplate } from './templates';
+import type { Clip, StyleSettings, Word } from './types';
 
-// Builds an .ass subtitle file with word-by-word animated captions for a 720x1280 video.
-// Times are shifted so the clip starts at 0.
+export function wordsInRange(words: Word[], start: number, end: number): Word[] {
+    return words.filter((w) => w.end > start && w.start < end);
+}
 
-const W = 720;
-const H = 1280;
+/** Group words into short caption lines, breaking early at punctuation. */
+export function groupWords(words: Word[], perLine: number): Word[][] {
+    const groups: Word[][] = [];
+    let cur: Word[] = [];
+    for (const w of words) {
+        cur.push(w);
+        if (cur.length >= perLine || /[.!?,;:]$/.test(w.text)) {
+            groups.push(cur);
+            cur = [];
+        }
+    }
+    if (cur.length) groups.push(cur);
+    return groups;
+}
 
-/** #rrggbb -> ASS colour &HBBGGRR& */
-function assColor(hex: string): string {
+/** When each caption group is on screen. */
+export function groupTimes(groups: Word[][]): { start: number; end: number }[] {
+    return groups.map((g, i) => {
+        const next = groups[i + 1];
+        const end = next ? Math.min(next[0].start, g[g.length - 1].end + 0.6) : g[g.length - 1].end + 0.4;
+        return { start: g[0].start, end: Math.max(end, g[0].start + 0.2) };
+    });
+}
+
+export const norm = (w: string) => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, '');
+
+export function isKeyword(clip: Clip, w: Word) {
+    const n = norm(w.text);
+    return n.length > 0 && clip.keywords.some((k) => norm(k) === n);
+}
+
+/** Emojis to show, with the time span of the caption group they belong to. */
+export function emojiEvents(clip: Clip, groups: Word[][]): { emoji: string; start: number; end: number }[] {
+    const times = groupTimes(groups);
+    const out: { emoji: string; start: number; end: number }[] = [];
+    const used = new Set<string>();
+    groups.forEach((g, gi) => {
+        for (const w of g) {
+            const hit = clip.emojis.find((e) => norm(e.word) === norm(w.text));
+            if (hit && !used.has(hit.word)) {
+                used.add(hit.word);
+                out.push({ emoji: hit.emoji, start: times[gi].start, end: times[gi].end });
+                break;
+            }
+        }
+    });
+    return out;
+}
+
+export function displayText(t: CaptionTemplate, w: Word) {
+    return t.uppercase ? w.text.toUpperCase() : w.text;
+}
+
+/** Vertical anchor of the caption block (fraction of output height). */
+export function captionY(position: StyleSettings['position']) {
+    return position === 'top' ? 0.2 : position === 'middle' ? 0.5 : 0.74;
+}
+
+// ---------- .ass subtitle export ----------
+
+function assColor(hex: string, alpha = 0): string {
     const h = hex.replace('#', '');
-    return `&H00${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}&`.toUpperCase();
+    const a = alpha.toString(16).padStart(2, '0');
+    return `&H${a}${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}&`.toUpperCase();
 }
 
 function assTime(t: number): string {
@@ -21,42 +80,13 @@ function assTime(t: number): string {
     return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(cs).padStart(2, '0')}`;
 }
 
-function escapeText(t: string): string {
-    return t.replace(/\\/g, '').replace(/[{}]/g, '').replace(/\n/g, ' ');
-}
+const clean = (t: string) => t.replace(/[\\{}]/g, '').replace(/\n/g, ' ');
 
-export function wordsInRange(words: Word[], start: number, end: number): Word[] {
-    return words.filter((w) => w.end > start && w.start < end);
-}
-
-/** Group words into short lines, breaking early at sentence ends. */
-export function groupWords(words: Word[], perLine: number): Word[][] {
-    const groups: Word[][] = [];
-    let cur: Word[] = [];
-    for (const w of words) {
-        cur.push(w);
-        const endsSentence = /[.!?,]$/.test(w.text);
-        if (cur.length >= perLine || endsSentence) {
-            groups.push(cur);
-            cur = [];
-        }
-    }
-    if (cur.length) groups.push(cur);
-    return groups;
-}
-
-export function buildAss(
-    words: Word[],
-    clipStart: number,
-    clipEnd: number,
-    style: CaptionStyle,
-    highlight: string,
-    perLine: number
-): string {
-    const boxed = style === 'boxed';
-    const upper = style !== 'clean';
-    const fontSize = style === 'clean' ? 54 : 66;
-    // BorderStyle 3 = opaque box behind text
+export function buildAss(words: Word[], clip: Clip, style: StyleSettings, W: number, H: number): string {
+    const t = getTemplate(style.template);
+    const size = Math.round(t.size * W * (style.aspect === '16:9' ? 0.6 : 1));
+    const outline = Math.round(t.outline * size);
+    const y = Math.round(captionY(style.position) * H);
     const header = `[Script Info]
 ScriptType: v4.00+
 PlayResX: ${W}
@@ -66,33 +96,63 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,Montserrat ExtraBold,${fontSize},&H00FFFFFF,&H00FFFFFF,&H00000000,${boxed ? '&H99000000' : '&H80000000'},-1,0,0,0,100,100,0,0,${boxed ? 3 : 1},${boxed ? 10 : 5},${boxed ? 0 : 2},2,60,60,360,1
+Style: Cap,${t.font},${size},${assColor(t.color)},${assColor(t.color)},&H00000000,${t.lineBox ? '&H55000000' : '&H80000000'},0,0,0,0,100,100,0,0,${t.lineBox ? 3 : 1},${t.lineBox ? Math.round(size * 0.25) : outline},${t.shadow ? Math.max(1, Math.round(size * 0.05)) : 0},5,${Math.round(W * 0.08)},${Math.round(W * 0.08)},0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 `;
-    if (style === 'none') return header;
+    if (t.id === 'none') return header;
 
-    const hl = assColor(highlight);
+    const hl = assColor(style.highlight);
+    const groups = groupWords(wordsInRange(words, clip.start, clip.end), style.wordsPerLine);
+    const times = groupTimes(groups);
     const lines: string[] = [];
-    const groups = groupWords(wordsInRange(words, clipStart, clipEnd), perLine);
+    const pos = `{\\an5\\pos(${Math.round(W / 2)},${y})}`;
 
     groups.forEach((group, gi) => {
-        const groupEnd = gi + 1 < groups.length ? Math.min(groups[gi + 1][0].start, group[group.length - 1].end + 0.6) : group[group.length - 1].end + 0.4;
-        group.forEach((word, wi) => {
-            const from = word.start - clipStart;
-            const to = (wi + 1 < group.length ? group[wi + 1].start : groupEnd) - clipStart;
+        // one event per spoken word so the highlight moves word by word
+        const spans = group.map((w, wi) => ({ from: wi === 0 ? times[gi].start : w.start, to: wi + 1 < group.length ? group[wi + 1].start : times[gi].end }));
+        spans.forEach((span, wi) => {
+            const from = span.from - clip.start;
+            const to = span.to - clip.start;
             if (to <= 0 || to <= from) return;
             const text = group
                 .map((w, i) => {
-                    const t = escapeText(upper ? w.text.toUpperCase() : w.text);
-                    if (i !== wi || style === 'clean') return t;
-                    // active word: highlight colour + a small "pop" scale animation
-                    return `{\\c${hl}\\fscx112\\fscy112\\t(0,90,\\fscx100\\fscy100)}${t}{\\c&H00FFFFFF&\\fscx100\\fscy100}`;
+                    const s = clean(displayText(t, w));
+                    const active = i === wi && t.active !== 'none';
+                    const spoken = t.id === 'karaoke' && i <= wi;
+                    const kw = style.keywordHighlight && isKeyword(clip, w);
+                    let tags = '';
+                    if (active && t.active === 'color') tags += `\\c${hl}`;
+                    else if (spoken) tags += `\\c${hl}`;
+                    else if (kw) tags += `\\c${hl}`;
+                    if (active && t.active === 'box') tags += `\\3c${hl}\\bord${Math.round(size * 0.28)}\\shad0`;
+                    if (active && t.pop) tags += `\\fscx115\\fscy115\\t(0,100,\\fscx100\\fscy100)`;
+                    if (kw && !active) tags += `\\fscx108\\fscy108`;
+                    return tags ? `{${tags}}${s}{\\r}` : s;
                 })
                 .join(' ');
-            lines.push(`Dialogue: 0,${assTime(from)},${assTime(to)},Cap,,0,0,0,,${text}`);
+            lines.push(`Dialogue: 0,${assTime(from)},${assTime(to)},Cap,,0,0,0,,${pos}${text}`);
         });
     });
     return header + lines.join('\n') + '\n';
+}
+
+// ---------- .srt export ----------
+
+function srtTime(t: number) {
+    const s = Math.max(0, t);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    const ms = Math.round((s - Math.floor(s)) * 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+}
+
+export function buildSrt(words: Word[], clip: Clip, perLine: number): string {
+    const groups = groupWords(wordsInRange(words, clip.start, clip.end), perLine);
+    const times = groupTimes(groups);
+    return groups
+        .map((g, i) => `${i + 1}\n${srtTime(times[i].start - clip.start)} --> ${srtTime(times[i].end - clip.start)}\n${g.map((w) => w.text).join(' ')}\n`)
+        .join('\n');
 }

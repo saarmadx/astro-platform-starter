@@ -50,5 +50,11 @@ export async function findClips(
     });
     if (!res.ok) throw new Error(await readError(res));
     const data = (await res.json()) as { clips: Omit<Clip, 'id'>[] };
-    return data.clips.map((c, i) => ({ ...c, id: `clip-${i}-${Math.round(c.start)}` }));
+    return data.clips.map((c, i) => ({
+        ...c,
+        subscores: c.subscores ?? { hook: c.score, flow: c.score, value: c.score, shareability: c.score },
+        keywords: c.keywords ?? [],
+        emojis: c.emojis ?? [],
+        id: `clip-${i}-${Math.round(c.start)}`
+    }));
 }

@@ -5,6 +5,11 @@
     src: url('/fonts/Montserrat-ExtraBold.ttf') format('truetype');
     font-display: swap;
 }
+/* caption fonts used by the preview; ffmpeg uses the same files for export */
+@font-face { font-family: 'CapMontserrat'; src: url('/fonts/Montserrat-ExtraBold.ttf') format('truetype'); }
+@font-face { font-family: 'CapPoppins'; src: url('/fonts/Poppins-ExtraBold.ttf') format('truetype'); }
+@font-face { font-family: 'CapAnton'; src: url('/fonts/Anton-Regular.ttf') format('truetype'); }
+@font-face { font-family: 'CapBangers'; src: url('/fonts/Bangers-Regular.ttf') format('truetype'); }
 
 @theme {
     --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;

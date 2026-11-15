@@ -20,7 +20,9 @@ Rules:
 - Start and end times must come from the transcript's timestamps and fall on sentence boundaries.
 - Respect the requested minimum and maximum clip length.
 - Clips must not overlap.
-- Score each clip 0-100 for how likely it is to perform well, and be honest: a weak video should get low scores.
+- Score each clip 0-100 for how likely it is to perform well, and be honest: a weak video should get low scores. Also score four parts 0-100: hook (how strongly the first seconds grab attention), flow (does it play smoothly and end on a complete thought), value (how useful, funny or emotional it is), shareability (how likely people are to send it to someone).
+- Pick 3 to 6 keywords per clip: single words actually spoken in the clip that carry the meaning, to highlight in the captions.
+- Pick 2 to 4 emoji per clip, each tied to one single word actually spoken in the clip.
 - Write titles in the same language as the transcript. Make each title specific to that clip, not a generic template, and under 70 characters.`;
 
 const CLIP_SCHEMA = {
@@ -36,11 +38,32 @@ const CLIP_SCHEMA = {
                     end: { type: 'number', description: 'Clip end time in seconds.' },
                     hook: { type: 'string', description: 'The opening line that grabs attention.' },
                     score: { type: 'integer', description: 'Predicted performance, 0-100.' },
+                    subscores: {
+                        type: 'object',
+                        properties: {
+                            hook: { type: 'integer' },
+                            flow: { type: 'integer' },
+                            value: { type: 'integer' },
+                            shareability: { type: 'integer' }
+                        },
+                        required: ['hook', 'flow', 'value', 'shareability'],
+                        additionalProperties: false
+                    },
+                    keywords: { type: 'array', items: { type: 'string' }, description: 'Single spoken words to highlight.' },
+                    emojis: {
+                        type: 'array',
+                        items: {
+                            type: 'object',
+                            properties: { word: { type: 'string' }, emoji: { type: 'string' } },
+                            required: ['word', 'emoji'],
+                            additionalProperties: false
+                        }
+                    },
                     reason: { type: 'string', description: 'One sentence on why this moment works.' },
                     description: { type: 'string', description: 'A short video description for the upload.' },
                     hashtags: { type: 'array', items: { type: 'string' } }
                 },
-                required: ['title', 'start', 'end', 'hook', 'score', 'reason', 'description', 'hashtags'],
+                required: ['title', 'start', 'end', 'hook', 'score', 'subscores', 'keywords', 'emojis', 'reason', 'description', 'hashtags'],
                 additionalProperties: false
             }
         }
@@ -56,6 +79,9 @@ type Clip = {
     end: number;
     hook: string;
     score: number;
+    subscores: { hook: number; flow: number; value: number; shareability: number };
+    keywords: string[];
+    emojis: { word: string; emoji: string }[];
     reason: string;
     description: string;
     hashtags: string[];

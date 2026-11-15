@@ -2,13 +2,17 @@
 
 Turn long videos (podcasts, interviews, talks, streams) into short vertical clips with animated captions, ready for YouTube Shorts, TikTok and Reels.
 
-## How it works
+## Features
 
-1. **Upload**: the video stays in the browser. [ffmpeg.wasm](https://ffmpegwasm.netlify.app/) pulls out the audio in 10-minute mp3 chunks.
-2. **Transcribe**: `/api/transcribe` sends each audio chunk to OpenAI Whisper and gets word-level timestamps.
-3. **Pick clips**: `/api/highlights` sends the timestamped transcript to Claude, which returns the best moments with a hook, a 0–100 score, a title, a description and hashtags.
-4. **Edit**: a live 9:16 preview with captions; trim the start and end, choose a caption style and highlight colour, and slide the crop to follow the speaker.
-5. **Export**: ffmpeg.wasm cuts the clip, crops it to 720×1280 and burns in word-by-word captions. The MP4 downloads straight from the browser.
+- **Upload** a long video. It stays in the browser; only the audio is sent off for transcription.
+- **Transcription** with word timings (OpenAI Whisper, via `/api/transcribe`).
+- **AI clip finder** (Claude, via `/api/highlights`): picks the best moments, scores each 0–100 with a hook / flow / value / shareability breakdown, and suggests a title, description, hashtags, keywords and emoji.
+- **Follow the speaker**: MediaPipe face detection builds a smooth crop path so vertical clips keep the speaker in frame. Manual framing and "fit + blur" are also available.
+- **8 caption templates** with word-by-word highlighting, keyword emphasis, auto emoji and top / middle / bottom placement.
+- **Editor**: live preview, transcript (click to seek, set start/end from a word, fix words), trim controls, timeline.
+- **Brand kit**: logo watermark on every export.
+- **Formats**: 9:16, 1:1, 16:9; export 720p or 1080p MP4, one clip or all, plus `.srt` captions.
+- **Projects** are saved in the browser (IndexedDB) so you can come back to them.
 
 ## Setup
 
@@ -30,14 +34,20 @@ On Netlify, add the same variables under **Site configuration → Environment va
 
 - `src/pages/index.astro`: landing page
 - `src/pages/studio.astro` + `src/components/Studio.tsx`: the clip editor
-- `src/lib/video.ts`: ffmpeg.wasm audio extraction and clip rendering
-- `src/lib/captions.ts`: animated `.ass` caption builder
+- `src/components/`: `Studio` (shell + pipeline), `Home`, `ProjectView`, `Editor`, `BrandKit`
+- `src/lib/video.ts`: ffmpeg.wasm audio extraction and clip rendering (crop path, captions, emoji, logo)
+- `src/lib/captions.ts` + `templates.ts`: caption templates, `.ass` and `.srt` builders
+- `src/lib/draw.ts`: canvas preview that matches the export
+- `src/lib/faces.ts`: speaker tracking with MediaPipe
+- `src/lib/store.ts`: saved projects and brand kit
 - `src/pages/api/transcribe.ts`, `src/pages/api/highlights.ts`: server routes
-- `scripts/copy-ffmpeg.mjs`: copies the ffmpeg core into `public/ffmpeg` before `dev` and `build`
+- `scripts/copy-ffmpeg.mjs`: copies the ffmpeg and MediaPipe runtimes into `public/` before `dev` and `build`
 
 ## Limits and ideas for later
 
 - Rendering runs on the viewer's device, so it is slower than a server (about 1–2 minutes per clip).
-- The crop position is manual. Automatic face tracking would be the next upgrade.
+- Speaker tracking follows the largest face; with several people on screen it may not pick the one talking.
 - No YouTube-link import: downloading from YouTube breaks YouTube's terms. Upload files you own or have permission to use.
-- Next steps could include user accounts, saved projects, B-roll and emoji inserts, and batch export.
+- Next steps could include user accounts, AI B-roll and direct posting to social platforms.
+
+Caption fonts (Montserrat, Poppins, Anton, Bangers) are under the SIL Open Font License.
