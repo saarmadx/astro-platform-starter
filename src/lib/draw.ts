@@ -1,19 +1,23 @@
-// Draws one frame of a clip (framing, captions, emoji, logo) onto a canvas.
-// Used by the live preview; the exported video is built to match it.
-import { captionY, displayText, emojiEvents, groupTimes, isKeyword } from './captions';
-import { cropPath, cropWindow, posAt } from './geometry';
-import { getTemplate } from './templates';
-import type { Brand, Clip, StyleSettings, Word } from './types';
+// Draws one frame of a clip (layout, zoom, captions, emoji, title, logo, progress bar) on a
+// canvas. Used by the live preview, the reel preview and the thumbnail maker; the exported
+// video is built to match it.
+import { captionSize, captionY, displayText, emojiEvents, groupTimes, type DWord } from './captions';
+import { aspectRatio, cropPath, cropWindow, posAt } from './geometry';
+import { getTemplate, TITLE_FONT } from './templates';
+import { outputDuration, toOutputClamped } from './timeline';
+import type { Brand, Clip, StyleSettings } from './types';
 
 export type Scene = {
     clip: Clip;
     style: StyleSettings;
     brand: Brand;
-    groups: Word[][];
+    groups: DWord[][];
     logo: HTMLImageElement | null;
+    /** set while the preview holds the last frame for the freeze ending (0..1 progress) */
+    freezing?: number | null;
 };
 
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -23,32 +27,82 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
     ctx.closePath();
 }
 
-export function drawScene(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, s: Scene) {
+export function zoomAt(clip: Clip, t: number): number {
+    const z = (clip.zooms ?? []).find((s) => t >= s.start && t < s.end);
+    return z ? z.scale : 1;
+}
+
+/** Draws a source rectangle into a destination rectangle, cropping to fill (cover), with zoom. */
+function drawRegion(ctx: CanvasRenderingContext2D, v: HTMLVideoElement, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number, zoom: number) {
+    // cover: trim the source so its shape matches the destination
+    const dar = dw / dh;
+    if (sw / sh > dar) {
+        const nw = sh * dar;
+        sx += (sw - nw) / 2;
+        sw = nw;
+    } else {
+        const nh = sw / dar;
+        sy += (sh - nh) / 2;
+        sh = nh;
+    }
+    if (zoom !== 1) {
+        const zw = sw / zoom;
+        const zh = sh / zoom;
+        sx += (sw - zw) / 2;
+        sy += (sh - zh) / 2;
+        sw = zw;
+        sh = zh;
+    }
+    ctx.drawImage(v, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, clip: Clip, style: StyleSettings) {
     const W = ctx.canvas.width;
     const H = ctx.canvas.height;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
-
     const vw = video.videoWidth;
     const vh = video.videoHeight;
-    if (vw && video.readyState >= 2) {
-        if (s.style.layout === 'fit') {
-            // blurred fill behind the whole frame
-            const cover = Math.max(W / vw, H / vh);
-            ctx.save();
-            ctx.filter = 'blur(24px) brightness(0.8)';
-            ctx.drawImage(video, (W - vw * cover) / 2, (H - vh * cover) / 2, vw * cover, vh * cover);
-            ctx.restore();
-            const fit = Math.min(W / vw, H / vh);
-            ctx.drawImage(video, (W - vw * fit) / 2, (H - vh * fit) / 2, vw * fit, vh * fit);
-        } else {
-            const { cw, ch, y } = cropWindow(vw, vh, s.style.aspect);
-            const x = (vw - cw) * posAt(cropPath(s.clip, s.style, vw, vh), t);
-            ctx.drawImage(video, x, y, cw, ch, 0, 0, W, H);
-        }
+    if (!vw || video.readyState < 2) return;
+    const zoom = zoomAt(clip, t);
+
+    if (style.layout === 'fit') {
+        const cover = Math.max(W / vw, H / vh);
+        ctx.save();
+        ctx.filter = 'blur(24px) brightness(0.8)';
+        ctx.drawImage(video, (W - vw * cover) / 2, (H - vh * cover) / 2, vw * cover, vh * cover);
+        ctx.restore();
+        const fit = Math.min(W / vw, H / vh) * zoom;
+        ctx.drawImage(video, (W - vw * fit) / 2, (H - vh * fit) / 2, vw * fit, vh * fit);
+        return;
     }
 
-    drawCaptions(ctx, t, s);
+    if (style.layout === 'split') {
+        const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
+        const TH = Math.round(H * (style.splitRatio ?? 0.4));
+        drawRegion(ctx, video, fc.x * vw, fc.y * vh, fc.w * vw, fc.h * vh, 0, 0, W, TH, zoom);
+        const ar = W / (H - TH);
+        const cw = Math.min(vw, vh * ar);
+        const ch = Math.min(vh, vw / ar);
+        drawRegion(ctx, video, (vw - cw) * style.cropX, (vh - ch) / 2, cw, ch, 0, TH, W, H - TH, zoom);
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, TH - 2, W, 4);
+        return;
+    }
+
+    const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
+    const x = (vw - cw) * posAt(cropPath(clip, style, vw, vh), t);
+    drawRegion(ctx, video, x, y, cw, ch, 0, 0, W, H, zoom);
+}
+
+export function drawScene(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, s: Scene) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    drawVideoLayer(ctx, video, t, s.clip, s.style);
+    const outT = s.freezing != null ? outputDuration(s.clip) : toOutputClamped(s.clip, t);
+
+    if (s.freezing == null) drawCaptions(ctx, t, s);
+    drawHookTitle(ctx, outT, s);
 
     if (s.logo && s.logo.complete && s.logo.naturalWidth) {
         const lw = W * s.brand.logoSize;
@@ -58,6 +112,83 @@ export function drawScene(ctx: CanvasRenderingContext2D, video: HTMLVideoElement
         const ly = s.brand.logoCorner.startsWith('t') ? m : H - lh - m;
         ctx.drawImage(s.logo, lx, ly, lw, lh);
     }
+
+    if (s.freezing != null && s.clip.freeze?.text.trim()) drawFreezeText(ctx, s.clip.freeze.text, s.style);
+
+    if (s.style.progressBar) {
+        const total = outputDuration(s.clip) + (s.clip.freeze?.seconds ?? 0);
+        const p = total > 0 ? Math.min(1, (outT + (s.freezing ?? 0) * (s.clip.freeze?.seconds ?? 0)) / total) : 0;
+        const bh = Math.max(4, Math.round(H * 0.008));
+        ctx.fillStyle = 'rgba(255,255,255,0.25)';
+        ctx.fillRect(0, H - bh, W, bh);
+        ctx.fillStyle = s.style.highlight;
+        ctx.fillRect(0, H - bh, W * p, bh);
+    }
+}
+
+export function wrap(ctx: CanvasRenderingContext2D, text: string, maxW: number): string[] {
+    const words = text.split(/\s+/);
+    const lines: string[] = [];
+    let cur = '';
+    for (const w of words) {
+        const test = cur ? `${cur} ${w}` : w;
+        if (cur && ctx.measureText(test).width > maxW) {
+            lines.push(cur);
+            cur = w;
+        } else cur = test;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+}
+
+export function drawFreezeText(ctx: CanvasRenderingContext2D, text: string, style: StyleSettings) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    const size = W * (style.aspect === '16:9' ? 0.046 : 0.072);
+    ctx.save();
+    ctx.font = `${size}px ${TITLE_FONT.css}, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    const lines = wrap(ctx, text.trim(), W * 0.8);
+    lines.forEach((l, i) => {
+        const y = H / 2 + (i - (lines.length - 1) / 2) * size * 1.2;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = size * 0.28;
+        ctx.strokeText(l, W / 2, y);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(l, W / 2, y);
+    });
+    ctx.restore();
+}
+
+function drawHookTitle(ctx: CanvasRenderingContext2D, outT: number, s: Scene) {
+    const h = s.clip.hookTitle;
+    if (!h || !h.text.trim() || h.seconds <= 0 || outT > h.seconds) return;
+    drawHookTitleText(ctx, h.text, s.style);
+}
+
+export function drawHookTitleText(ctx: CanvasRenderingContext2D, text: string, style: StyleSettings) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    const size = W * (style.aspect === '16:9' ? 0.04 : 0.062);
+    ctx.save();
+    ctx.font = `${size}px ${TITLE_FONT.css}, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const lines = wrap(ctx, text.trim(), W * 0.78);
+    const pad = size * 0.35;
+    let y = H * 0.07 + pad;
+    for (const l of lines) {
+        const w = ctx.measureText(l).width;
+        ctx.fillStyle = '#fff';
+        roundRect(ctx, W / 2 - w / 2 - pad, y - pad * 0.4, w + pad * 2, size + pad * 0.8, size * 0.15);
+        ctx.fill();
+        ctx.fillStyle = '#000';
+        ctx.fillText(l, W / 2, y + size / 2);
+        y += size + pad * 0.8;
+    }
+    ctx.restore();
 }
 
 function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
@@ -67,91 +198,122 @@ function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
     const H = ctx.canvas.height;
     const times = groupTimes(s.groups);
     const gi = times.findIndex((g) => t >= g.start && t < g.end);
-    if (gi < 0) return;
-    const group = s.groups[gi];
-    const size = tpl.size * W * (s.style.aspect === '16:9' ? 0.6 : 1);
-    ctx.font = `${size}px ${tpl.cssFont}, 'Arial Black', sans-serif`;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    ctx.lineJoin = 'round';
-    const space = size * 0.28;
-    const maxW = W * 0.84;
+    const size = captionSize(tpl, s.style, W);
+    const cy = captionY(s.style) * H;
 
-    const activeIdx = group.findIndex((w, i) => t >= w.start && (i + 1 >= group.length || t < group[i + 1].start));
-    const items = group.map((w) => {
-        const text = displayText(tpl, w);
-        return { w, text, width: ctx.measureText(text).width };
-    });
-    const lines: { items: typeof items; width: number }[] = [];
-    let line: typeof items = [];
-    let lw = 0;
-    for (const it of items) {
-        if (line.length && lw + space + it.width > maxW) {
-            lines.push({ items: line, width: lw });
-            line = [];
-            lw = 0;
+    if (gi >= 0) {
+        const group = s.groups[gi];
+        ctx.font = `${size}px ${tpl.cssFont}, 'Arial Black', sans-serif`;
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.lineJoin = 'round';
+        const space = size * 0.28;
+        const maxW = W * 0.84;
+        const activeIdx = group.findIndex((w, i) => t >= w.start && (i + 1 >= group.length || t < group[i + 1].start));
+        const items = group.map((w) => {
+            const text = displayText(tpl, w);
+            return { w, text, width: ctx.measureText(text).width };
+        });
+        const lines: { items: typeof items; width: number }[] = [];
+        let line: typeof items = [];
+        let lw = 0;
+        for (const it of items) {
+            if (line.length && lw + space + it.width > maxW) {
+                lines.push({ items: line, width: lw });
+                line = [];
+                lw = 0;
+            }
+            lw += (line.length ? space : 0) + it.width;
+            line.push(it);
         }
-        lw += (line.length ? space : 0) + it.width;
-        line.push(it);
-    }
-    if (line.length) lines.push({ items: line, width: lw });
+        if (line.length) lines.push({ items: line, width: lw });
 
-    const lh = size * 1.2;
-    const cy = captionY(s.style.position) * H;
-    let y = cy - ((lines.length - 1) * lh) / 2;
-    for (const ln of lines) {
-        let x = (W - ln.width) / 2;
-        if (tpl.lineBox) {
-            ctx.fillStyle = 'rgba(0,0,0,0.67)';
-            roundRect(ctx, x - size * 0.3, y - size * 0.62, ln.width + size * 0.6, size * 1.24, size * 0.18);
-            ctx.fill();
-        }
-        for (const it of ln.items) {
-            const i = group.indexOf(it.w);
-            const active = i === activeIdx && tpl.active !== 'none';
-            const spoken = tpl.id === 'karaoke' && activeIdx >= 0 && i <= activeIdx;
-            const kw = s.style.keywordHighlight && isKeyword(s.clip, it.w);
-            let scale = 1;
-            if (active && tpl.pop) scale = 1 + 0.15 * Math.max(0, 1 - (t - it.w.start) / 0.1);
-            else if (kw && !active) scale = 1.08;
-            ctx.save();
-            ctx.translate(x + it.width / 2, y);
-            ctx.scale(scale, scale);
-            ctx.translate(-(x + it.width / 2), -y);
-            if (active && tpl.active === 'box') {
-                ctx.fillStyle = s.style.highlight;
-                roundRect(ctx, x - size * 0.18, y - size * 0.6, it.width + size * 0.36, size * 1.2, size * 0.2);
+        const lh = size * 1.2;
+        let y = cy - ((lines.length - 1) * lh) / 2;
+        for (const ln of lines) {
+            let x = (W - ln.width) / 2;
+            if (tpl.lineBox) {
+                ctx.fillStyle = 'rgba(0,0,0,0.67)';
+                roundRect(ctx, x - size * 0.3, y - size * 0.62, ln.width + size * 0.6, size * 1.24, size * 0.18);
                 ctx.fill();
             }
-            if (tpl.shadow) {
-                ctx.shadowColor = 'rgba(0,0,0,0.6)';
-                ctx.shadowOffsetY = size * 0.05;
-                ctx.shadowBlur = size * 0.08;
+            for (const it of ln.items) {
+                const i = group.indexOf(it.w);
+                const active = i === activeIdx && tpl.active !== 'none';
+                const spoken = tpl.fillSpoken && activeIdx >= 0 && i <= activeIdx;
+                const hidden = tpl.reveal && activeIdx >= 0 && i > activeIdx;
+                if (hidden) {
+                    x += it.width + space;
+                    continue;
+                }
+                const big = tpl.activeScale ?? 1.15;
+                let scale = 1;
+                if (active && tpl.pop) scale = 1 + (big - 1) * Math.max(0, 1 - (t - it.w.start) / 0.11);
+                else if (active && tpl.activeScale) scale = big;
+                else if (it.w.kw && !active) scale = 1.08;
+                ctx.save();
+                ctx.translate(x + it.width / 2, y);
+                ctx.scale(scale, scale);
+                ctx.translate(-(x + it.width / 2), -y);
+                const boxed = active && tpl.active === 'box';
+                if (boxed) {
+                    ctx.fillStyle = s.style.highlight;
+                    roundRect(ctx, x - size * 0.18, y - size * 0.6, it.width + size * 0.36, size * 1.2, size * 0.2);
+                    ctx.fill();
+                }
+                if (tpl.glow) {
+                    ctx.shadowColor = tpl.glow;
+                    ctx.shadowBlur = size * 0.45;
+                } else if (tpl.shadow) {
+                    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+                    ctx.shadowOffsetY = size * 0.05;
+                    ctx.shadowBlur = size * 0.08;
+                }
+                if (tpl.outline > 0 && !boxed) {
+                    ctx.strokeStyle = tpl.outlineColor ?? '#000';
+                    ctx.lineWidth = tpl.outline * size * 2;
+                    ctx.strokeText(it.text, x, y);
+                    if (!tpl.glow) ctx.shadowColor = 'transparent';
+                }
+                const highlighted = (active && (tpl.active === 'color' || tpl.active === 'underline')) || spoken || (it.w.kw && !boxed);
+                ctx.fillStyle = boxed && tpl.boxText ? tpl.boxText : highlighted ? s.style.highlight : it.w.color;
+                ctx.fillText(it.text, x, y);
+                if (active && tpl.active === 'underline') {
+                    ctx.shadowColor = 'transparent';
+                    ctx.fillRect(x, y + size * 0.45, it.width, Math.max(3, size * 0.08));
+                }
+                ctx.restore();
+                x += it.width + space;
             }
-            if (tpl.outline > 0 && !(active && tpl.active === 'box')) {
-                ctx.strokeStyle = '#000';
-                ctx.lineWidth = tpl.outline * size * 2;
-                ctx.strokeText(it.text, x, y);
-                ctx.shadowColor = 'transparent';
-            }
-            ctx.fillStyle = (active && tpl.active === 'color') || spoken || (kw && !(active && tpl.active === 'box')) ? s.style.highlight : tpl.color;
-            ctx.fillText(it.text, x, y);
-            ctx.restore();
-            x += it.width + space;
+            y += lh;
         }
-        y += lh;
     }
 
     if (s.style.emojis) {
         const ev = emojiEvents(s.clip, s.groups).find((e) => t >= e.start && t < e.end);
         if (ev) {
             const es = size * 1.6;
-            ctx.font = `${es}px 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif`;
+            const age = t - ev.start;
+            const pop = s.style.emojiAnim ? (age < 0.12 ? 0.5 + (age / 0.12) * 0.7 : age < 0.24 ? 1.2 - ((age - 0.12) / 0.12) * 0.2 : 1) : 1;
+            const bob = s.style.emojiAnim ? Math.sin(age * Math.PI * 3) * es * 0.06 : 0;
+            ctx.save();
+            ctx.font = `${es * pop}px 'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif`;
             ctx.textAlign = 'center';
-            const top = cy - ((lines.length - 1) * lh) / 2 - size * 0.6 - es * 0.6;
-            ctx.fillText(ev.emoji, W / 2, top);
+            ctx.textBaseline = 'middle';
+            ctx.fillText(ev.emoji, W / 2, cy - size * 0.6 - es * 0.6 + bob);
+            ctx.restore();
         }
     }
+}
+
+/** Renders a full-size transparent PNG with some text drawn on it (title / freeze), for ffmpeg to overlay. */
+export async function textOverlayPng(W: number, H: number, draw: (ctx: CanvasRenderingContext2D) => void): Promise<Uint8Array> {
+    const c = document.createElement('canvas');
+    c.width = W;
+    c.height = H;
+    draw(c.getContext('2d')!);
+    const blob: Blob = await new Promise((r) => c.toBlob((b) => r(b!), 'image/png'));
+    return new Uint8Array(await blob.arrayBuffer());
 }
 
 /** Renders an emoji to a PNG so ffmpeg can overlay it (libass can't draw colour emoji). */
@@ -166,3 +328,5 @@ export async function emojiPng(emoji: string, px: number): Promise<Uint8Array> {
     const blob: Blob = await new Promise((r) => c.toBlob((b) => r(b!), 'image/png'));
     return new Uint8Array(await blob.arrayBuffer());
 }
+
+export { aspectRatio };

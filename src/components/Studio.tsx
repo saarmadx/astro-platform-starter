@@ -272,7 +272,7 @@ export default function Studio() {
 
                 <main className="mx-auto w-full max-w-7xl grow px-4 py-6 sm:px-8">
                     {view.name === 'home' && (
-                        <Home projects={projects} running={progress} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} accessCode={accessCode} setAccessCode={setAccessCode} />
+                        <Home projects={projects} running={progress} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} accessCode={accessCode} setAccessCode={setAccessCode} />
                     )}
                     {view.name === 'brand' && <BrandKit brand={brand} setBrand={setBrand} />}
                     {view.name === 'project' && current && (

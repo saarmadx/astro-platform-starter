@@ -1,6 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { findAudioEvents } from '../lib/audio';
-import { chatPrompt } from '../lib/prompts';
+import { chatPrompt, splitForChat } from '../lib/prompts';
+import { displayWords, groupWords } from '../lib/captions';
+import { drawScene } from '../lib/draw';
+import { outputSize } from '../lib/geometry';
+import { skipCut } from '../lib/timeline';
 import { renderClip } from '../lib/video';
 import type { Brand, ContentMode, Picker, Project } from '../lib/types';
 import { MODES, PICKERS } from './Home';
@@ -36,6 +40,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
     const [batch, setBatch] = useState<{ i: number; n: number; ratio: number } | null>(null);
     const [batchError, setBatchError] = useState('');
     const [confirmDelete, setConfirmDelete] = useState(false);
+    const [reel, setReel] = useState(false);
     const busy = !!progress;
 
     const clips = useMemo(() => [...project.clips].sort((a, b) => (sort === 'score' ? b.score - a.score : a.start - b.start)), [project.clips, sort]);
@@ -55,10 +60,18 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     quality: 720,
                     videoWidth: project.width,
                     videoHeight: project.height,
+                    speakers: project.speakers,
                     onProgress: (ratio) => setBatch({ i, n: clips.length, ratio })
                 });
                 saveBlob(blob, `${String(i + 1).padStart(2, '0')} ${safeName(clips[i].title)}.mp4`);
             }
+            const notes = clips
+                .map((c, i) => {
+                    const tags = c.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
+                    return `${String(i + 1).padStart(2, '0')}. ${c.title}\nScore: ${c.score}\n\n${c.description}\n\n${tags}\n`;
+                })
+                .join('\n------------------------------\n\n');
+            saveBlob(new Blob([notes], { type: 'text/plain' }), `${safeName(project.name)} - titles and descriptions.txt`);
         } catch (e) {
             setBatchError((e as Error).message);
         } finally {
@@ -115,6 +128,9 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     <button className="btn-ghost" disabled={busy || !video} onClick={() => onRegenerate(project.options)}>
                         Find new clips
                     </button>
+                    <button className="btn-ghost" disabled={!video || clips.length === 0} onClick={() => setReel(true)}>
+                        ▶ Watch all
+                    </button>
                     <button className="btn-accent !py-2 text-sm" disabled={busy || !video || !!batch || clips.length === 0} onClick={exportAll}>
                         {batch ? `Exporting ${batch.i + 1}/${batch.n} · ${Math.round(batch.ratio * 100)}%` : 'Export all'}
                     </button>
@@ -159,6 +175,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
             )}
 
             {project.status === 'awaiting-paste' && project.transcript && !progress && <PastePanel project={project} onPaste={onPaste} />}
+            {reel && video && <ReelPreview project={project} clips={clips} video={video} brand={brand} onClose={() => setReel(false)} onOpen={onOpenClip} />}
 
             {(error || batchError) && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{error || batchError}</p>}
 
@@ -203,22 +220,25 @@ export default function ProjectView({ project, video, progress, error, brand, on
     );
 }
 
-/** Free clip picking: copy a prompt into a Claude chat, paste the answer back. */
+/** Free clip picking: copy a prompt into a Claude chat, paste the answer back. Long videos are split into parts. */
 function PastePanel({ project, onPaste }: { project: Project; onPaste: (answer: string) => Promise<void> }) {
-    const [copied, setCopied] = useState(false);
-    const [answer, setAnswer] = useState('');
-    const [err, setErr] = useState('');
-    const [busy, setBusy] = useState(false);
-    const prompt = useMemo(() => {
+    const parts = useMemo(() => {
         const t = project.transcript!;
         const o = project.options;
-        return chatPrompt(t.segments, findAudioEvents(t.energy, t.words), { mode: o.mode ?? 'funny', minSeconds: o.minSeconds, maxSeconds: o.maxSeconds, maxClips: o.maxClips, topic: o.topic });
+        const opts = { mode: o.mode ?? 'funny', minSeconds: o.minSeconds, maxSeconds: o.maxSeconds, maxClips: o.maxClips, topic: o.topic };
+        const chunks = splitForChat(t.segments, findAudioEvents(t.energy, t.words));
+        const perPart = Math.max(2, Math.ceil(o.maxClips / chunks.length) + 1);
+        return chunks.map((c, i) => chatPrompt(c.segments, c.events, { ...opts, maxClips: chunks.length > 1 ? perPart : o.maxClips }, { index: i, count: chunks.length }));
     }, [project.transcript, project.options]);
+    const [answers, setAnswers] = useState<string[]>(() => parts.map(() => ''));
+    const [copied, setCopied] = useState<number | null>(null);
+    const [err, setErr] = useState('');
+    const [busy, setBusy] = useState(false);
 
-    async function copy() {
+    async function copy(i: number) {
         try {
-            await navigator.clipboard.writeText(prompt);
-            setCopied(true);
+            await navigator.clipboard.writeText(parts[i]);
+            setCopied(i);
         } catch {
             setErr('Copying failed. Click inside the grey box, press Ctrl+A then Ctrl+C.');
         }
@@ -228,7 +248,12 @@ function PastePanel({ project, onPaste }: { project: Project; onPaste: (answer: 
         setErr('');
         setBusy(true);
         try {
-            await onPaste(answer);
+            // merge all pasted answers into one list
+            const lists = answers.filter((a) => a.trim()).map((a) => {
+                const m = a.match(/\[[\s\S]*\]/);
+                return m ? m[0].trim().slice(1, -1).trim() : '';
+            });
+            await onPaste(lists.length > 1 ? `[${lists.filter(Boolean).join(',')}]` : answers.find((a) => a.trim()) ?? '');
         } catch (e) {
             setErr((e as Error).message);
         } finally {
@@ -240,28 +265,110 @@ function PastePanel({ project, onPaste }: { project: Project; onPaste: (answer: 
         <section className="panel flex flex-col gap-5 p-5 sm:p-6">
             <div>
                 <h2 className="text-xl font-bold">Captions are ready. Now let Claude pick the clips (free)</h2>
-                <p className="mt-1 text-sm text-muted">Uses your normal Claude chat, so it costs nothing extra.</p>
+                <p className="mt-1 text-sm text-muted">
+                    Uses your normal Claude chat, so it costs nothing extra.
+                    {parts.length > 1 ? ` Your video is long, so it is split into ${parts.length} parts. Do each part in its own new chat; you can create clips after any of them.` : ''}
+                </p>
             </div>
-            <ol className="flex flex-col gap-4 text-sm">
-                <li className="flex flex-col gap-2">
-                    <span><b>1.</b> Copy the prompt (it includes your video’s transcript).</span>
-                    <div className="flex flex-wrap gap-2">
-                        <button className="btn-accent !py-2" onClick={copy}>{copied ? 'Copied ✓' : 'Copy prompt'}</button>
-                        <span className="self-center text-xs text-muted">{Math.round(prompt.length / 1000)}k characters</span>
-                    </div>
-                    <textarea readOnly value={prompt} className="input h-20 font-mono text-xs" aria-label="Prompt" onFocus={(e) => e.currentTarget.select()} />
-                </li>
-                <li className="flex flex-col gap-1">
-                    <span><b>2.</b> Open a <b>new chat</b> at <a href="https://claude.ai/new" target="_blank" rel="noreferrer">claude.ai</a>, paste it (Ctrl+V) and send.</span>
-                    <span className="text-xs text-muted">Very long videos may be too long for one chat; if so, cut the video into parts.</span>
-                </li>
-                <li className="flex flex-col gap-2">
-                    <span><b>3.</b> When Claude answers, copy its whole answer and paste it here:</span>
-                    <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} className="input h-32 font-mono text-xs" placeholder='[{"title": "...", "start": 12.3, ...}]' aria-label="Claude's answer" />
-                </li>
-            </ol>
+            {parts.map((prompt, i) => (
+                <div key={i} className={`flex flex-col gap-3 ${parts.length > 1 ? 'rounded-xl border border-white/10 p-4' : ''}`}>
+                    {parts.length > 1 && <p className="font-semibold">Part {i + 1} of {parts.length} {answers[i].trim() ? '✓' : ''}</p>}
+                    <ol className="flex flex-col gap-3 text-sm">
+                        <li className="flex flex-wrap items-center gap-2">
+                            <b>1.</b>
+                            <button className="btn-accent !py-2" onClick={() => copy(i)}>{copied === i ? 'Copied ✓' : 'Copy prompt'}</button>
+                            <span className="text-xs text-muted">{Math.round(prompt.length / 1000)}k characters</span>
+                        </li>
+                        <li>
+                            <b>2.</b> Open a <b>new chat</b> at <a href="https://claude.ai/new" target="_blank" rel="noreferrer">claude.ai</a>, paste it (Ctrl+V) and send.
+                        </li>
+                        <li className="flex flex-col gap-2">
+                            <span><b>3.</b> Copy Claude’s whole answer and paste it here:</span>
+                            <textarea
+                                value={answers[i]}
+                                onChange={(e) => setAnswers(answers.map((a, k) => (k === i ? e.target.value : a)))}
+                                className="input h-24 font-mono text-xs"
+                                placeholder='[{"title": "...", "start": 12.3, ...}]'
+                                aria-label={parts.length > 1 ? `Claude's answer for part ${i + 1}` : "Claude's answer"}
+                            />
+                        </li>
+                    </ol>
+                    <textarea readOnly value={prompt} className="input h-12 font-mono text-[10px] opacity-60" aria-label="Prompt" onFocus={(e) => e.currentTarget.select()} />
+                </div>
+            ))}
             {err && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{err}</p>}
-            <button className="btn-accent" disabled={!answer.trim() || busy} onClick={create}>{busy ? 'Creating clips…' : 'Create my clips'}</button>
+            <button className="btn-accent" disabled={!answers.some((a) => a.trim()) || busy} onClick={create}>{busy ? 'Creating clips…' : 'Create my clips'}</button>
         </section>
+    );
+}
+
+/** Plays every clip back to back, like scrolling Shorts. */
+function ReelPreview({ project, clips, video, brand, onClose, onOpen }: { project: Project; clips: Project['clips']; video: LoadedVideo; brand: Brand; onClose: () => void; onOpen: (id: string) => void }) {
+    const [i, setI] = useState(0);
+    const vRef = useRef<HTMLVideoElement>(null);
+    const cRef = useRef<HTMLCanvasElement>(null);
+    const logo = useMemo(() => {
+        if (!brand.logo) return null;
+        const img = new Image();
+        img.src = brand.logo;
+        return img;
+    }, [brand.logo]);
+    const clip = clips[i];
+    const groups = useMemo(() => groupWords(displayWords(project.transcript?.words ?? [], clip, project.style, project.speakers, false), project.style.wordsPerLine), [clip, project]);
+    const size = outputSize(project.style.aspect, 540);
+    const ref = useRef({ clip, groups, i });
+    ref.current = { clip, groups, i };
+
+    useEffect(() => {
+        const v = vRef.current;
+        if (!v) return;
+        v.currentTime = clip.start;
+        v.play().catch(() => {});
+    }, [i]);
+
+    useEffect(() => {
+        let raf = 0;
+        const loop = () => {
+            const v = vRef.current;
+            const c = cRef.current;
+            const r = ref.current;
+            if (v && c) {
+                const skip = skipCut(r.clip, v.currentTime);
+                if (skip !== v.currentTime) v.currentTime = skip;
+                if (v.currentTime >= r.clip.end) setI((x) => (x + 1 < clips.length ? x + 1 : x));
+                drawScene(c.getContext('2d')!, v, v.currentTime, { clip: r.clip, style: project.style, brand, groups: r.groups, logo });
+            }
+            raf = requestAnimationFrame(loop);
+        };
+        raf = requestAnimationFrame(loop);
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+            if (e.key === 'ArrowDown' || e.key === 'ArrowRight') setI((x) => Math.min(clips.length - 1, x + 1));
+            if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') setI((x) => Math.max(0, x - 1));
+        };
+        window.addEventListener('keydown', onKey);
+        return () => {
+            cancelAnimationFrame(raf);
+            window.removeEventListener('keydown', onKey);
+        };
+    }, []);
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center gap-4 bg-black/90 p-4" onClick={onClose}>
+            <div className="flex flex-col items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                <div className="overflow-hidden rounded-2xl border border-white/15" style={{ height: 'min(78vh, 720px)', aspectRatio: `${size.W} / ${size.H}`, maxWidth: '92vw' }}>
+                    <canvas ref={cRef} width={size.W} height={size.H} className="h-full w-full" onClick={() => (vRef.current?.paused ? vRef.current.play() : vRef.current?.pause())} />
+                </div>
+                <p className="max-w-sm text-center font-semibold">{clip.title}</p>
+                <div className="flex items-center gap-2 text-sm">
+                    <button className="btn-ghost" disabled={i === 0} onClick={() => setI(i - 1)}>↑ Previous</button>
+                    <span className="text-muted tabular-nums">{i + 1} / {clips.length}</span>
+                    <button className="btn-ghost" disabled={i >= clips.length - 1} onClick={() => setI(i + 1)}>Next ↓</button>
+                    <button className="btn-ghost" onClick={() => onOpen(clip.id)}>Edit this clip</button>
+                    <button className="btn-ghost" onClick={onClose}>Close</button>
+                </div>
+            </div>
+            <video ref={vRef} src={video.url} playsInline className="pointer-events-none fixed top-0 left-0 size-px opacity-0" />
+        </div>
     );
 }

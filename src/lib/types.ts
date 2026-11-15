@@ -33,10 +33,24 @@ export type Clip = {
     /** auto-reframe path: time (absolute, seconds) -> face centre as a fraction of video width */
     track?: { t: number; x: number }[];
     thumb?: string; // data URL
+    /** split points added in the timeline (absolute source times) */
+    splits?: number[];
+    /** parts of the clip removed in the timeline (absolute source times) */
+    cuts?: Span[];
+    /** punch-in zooms (absolute source times) */
+    zooms?: (Span & { scale: number })[];
+    /** big headline at the top for the first seconds */
+    hookTitle?: { text: string; seconds: number };
+    /** freeze the last frame with a line of text */
+    freeze?: { seconds: number; text: string };
+    /** alternative titles to pick from */
+    altTitles?: string[];
 };
 
+export type Span = { start: number; end: number };
+
 export type Aspect = '9:16' | '1:1' | '16:9';
-export type Layout = 'auto' | 'manual' | 'fit';
+export type Layout = 'auto' | 'manual' | 'fit' | 'split';
 export type CaptionPosition = 'top' | 'middle' | 'bottom';
 
 export type Brand = {
@@ -55,7 +69,17 @@ export type StyleSettings = {
     keywordHighlight: boolean;
     aspect: Aspect;
     layout: Layout;
-    cropX: number; // used when layout === 'manual'
+    cropX: number; // used when layout === 'manual' (and for the gameplay part of 'split')
+    /** facecam rectangle in the source (fractions of width/height), for layout === 'split' */
+    facecam?: { x: number; y: number; w: number; h: number };
+    /** share of the height the facecam takes in 'split' layout */
+    splitRatio?: number;
+    progressBar?: boolean;
+    /** replace swear words in captions with ****; bleep also beeps the audio */
+    censor?: 'off' | 'captions' | 'bleep';
+    /** emoji pop and float instead of sitting still */
+    emojiAnim?: boolean;
+    speakerColors?: string[];
 };
 
 export type Project = {
@@ -83,6 +107,8 @@ export type Project = {
         picker?: Picker;
     };
     thumb?: string;
+    /** who is speaking from each time on (speaker index into style.speakerColors) */
+    speakers?: { t: number; speaker: number }[];
     /** captions finished so far, so a stopped run can continue where it left off */
     partial?: { key: string; words: Word[]; db: number[] | null; nextChunk: number };
 };

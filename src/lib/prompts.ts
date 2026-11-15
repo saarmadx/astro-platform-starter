@@ -68,10 +68,12 @@ ${BASE_RULES}`;
 export function chatPrompt(
     segments: Segment[],
     events: AudioEvent[],
-    o: { mode: Mode; minSeconds: number; maxSeconds: number; maxClips: number; topic: string }
+    o: { mode: Mode; minSeconds: number; maxSeconds: number; maxClips: number; topic: string },
+    part?: { index: number; count: number }
 ): string {
     const focus = o.topic.trim() ? `\nThe creator especially wants moments about: ${o.topic.trim()}` : '';
-    return `${systemPrompt(o.mode)}
+    const partNote = part && part.count > 1 ? `\n\nThis is part ${part.index + 1} of ${part.count} of a long video. Only pick moments inside this part; times are already the real times in the full video.` : '';
+    return `${systemPrompt(o.mode)}${partNote}
 
 <transcript>
 ${annotate(segments, events)}
@@ -79,9 +81,38 @@ ${annotate(segments, events)}
 
 Read the whole transcript, consider many candidate moments, then keep only the best ${o.maxClips} at most (fewer if the rest are weak). Each clip must be between ${o.minSeconds} and ${o.maxSeconds} seconds.${o.mode === 'funny' ? ' Ask yourself for each one: would a stranger actually laugh?' : ''}${focus}
 
-For each clip: fix the start and end from the transcript timestamps (start at the hook or setup, end right after the payoff${o.mode === 'funny' ? ' or laugh' : ''}), score it 0-100 honestly with four part scores (hook, flow, value = how ${o.mode === 'funny' ? 'funny' : 'valuable or entertaining'} it is, shareability), write a specific title, quote the hook line, and give 3-6 keywords (single words actually spoken in the clip) and 2-4 emoji each tied to one spoken word.
+For each clip: fix the start and end from the transcript timestamps (start at the hook or setup, end right after the payoff${o.mode === 'funny' ? ' or laugh' : ''}), score it 0-100 honestly with four part scores (hook, flow, value = how ${o.mode === 'funny' ? 'funny' : 'valuable or entertaining'} it is, shareability), write a specific title, quote the hook line, give 3-6 keywords (single words actually spoken in the clip), 2-4 emoji each tied to one spoken word, and 3 alternative titles in different styles (a quote, a question, a "POV:" or reaction style).
 
 Reply with ONLY a JSON array, best clip first, in exactly this shape:
-[{"title":"...","start":12.3,"end":48.9,"category":"Funny","hook":"...","score":87,"subscores":{"hook":90,"flow":85,"value":88,"shareability":84},"reason":"...","description":"...","hashtags":["...","..."],"keywords":["...","..."],"emojis":[{"word":"...","emoji":"😂"}]}]
+[{"title":"...","start":12.3,"end":48.9,"category":"Funny","hook":"...","score":87,"subscores":{"hook":90,"flow":85,"value":88,"shareability":84},"reason":"...","description":"...","hashtags":["...","..."],"keywords":["...","..."],"emojis":[{"word":"...","emoji":"😂"}],"altTitles":["...","...","..."]}]
 category is one of: Funny, Insight, Story, Hot take, Emotional, Surprising.`;
+}
+
+/** Splits a long transcript into parts that each fit comfortably in one chat message. */
+export function splitForChat(segments: Segment[], events: AudioEvent[], maxChars = 60000): { segments: Segment[]; events: AudioEvent[] }[] {
+    const parts: { segments: Segment[]; events: AudioEvent[] }[] = [];
+    let cur: Segment[] = [];
+    let size = 0;
+    const flush = () => {
+        if (!cur.length) return;
+        const from = cur[0].start;
+        const to = cur[cur.length - 1].end;
+        parts.push({ segments: cur, events: events.filter((e) => e.start >= from && e.start <= to + 3) });
+        cur = [];
+        size = 0;
+    };
+    for (const s of segments) {
+        const len = s.text.length + 20;
+        if (size + len > maxChars && cur.length) {
+            // a little overlap so a moment on the border isn't lost
+            const tail = cur.filter((x) => x.start >= cur[cur.length - 1].end - 45);
+            flush();
+            cur = [...tail];
+            size = tail.reduce((a, x) => a + x.text.length + 20, 0);
+        }
+        cur.push(s);
+        size += len;
+    }
+    flush();
+    return parts;
 }

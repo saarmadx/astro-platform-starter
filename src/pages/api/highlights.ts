@@ -62,9 +62,10 @@ const CLIPS_SCHEMA = {
                     emojis: {
                         type: 'array',
                         items: { type: 'object', properties: { word: { type: 'string' }, emoji: { type: 'string' } }, required: ['word', 'emoji'], additionalProperties: false }
-                    }
+                    },
+                    altTitles: { type: 'array', items: { type: 'string' }, description: '3 alternative titles in different styles.' }
                 },
-                required: ['title', 'start', 'end', 'category', 'hook', 'score', 'subscores', 'reason', 'description', 'hashtags', 'keywords', 'emojis'],
+                required: ['title', 'start', 'end', 'category', 'hook', 'score', 'subscores', 'reason', 'description', 'hashtags', 'keywords', 'emojis', 'altTitles'],
                 additionalProperties: false
             }
         }
@@ -86,6 +87,7 @@ type Clip = {
     hashtags: string[];
     keywords: string[];
     emojis: { word: string; emoji: string }[];
+    altTitles: string[];
 };
 
 // ---------- helpers ----------
@@ -168,7 +170,7 @@ For every clip you keep:
 - Fix the start and end using the transcript timestamps: start right at the hook or setup, end right after the payoff${mode === 'funny' ? ' or laugh, keeping any reaction that follows the punchline' : ''}.
 - Keep it between ${minSeconds} and ${maxSeconds} seconds.
 - Score it 0-100 honestly with the four part scores (hook, flow, value = how ${mode === 'funny' ? 'funny' : 'valuable or entertaining'} it is, shareability).
-- Write a title that is specific to the moment, a hook line quoted from the clip, 3-6 keywords that are single words actually spoken in the clip, and 2-4 emoji each tied to one spoken word.${focus}`,
+- Write a title that is specific to the moment, a hook line quoted from the clip, 3-6 keywords that are single words actually spoken in the clip, 2-4 emoji each tied to one spoken word, and 3 alternative titles in different styles (a quote, a question, a "POV:" or reaction style).${focus}`,
             CLIPS_SCHEMA,
             'high'
         );

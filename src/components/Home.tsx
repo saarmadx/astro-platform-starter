@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { TEMPLATES } from '../lib/templates';
 import { LANGUAGES } from '../lib/localAsr';
 import type { Aspect, AsrEngine, AsrQuality, ContentMode, Picker, Project } from '../lib/types';
@@ -44,11 +44,12 @@ type Props = {
     running: Record<string, { label: string; ratio: number }>;
     onCreate: (input: NewProjectInput) => Promise<void>;
     onOpen: (id: string) => void;
+    onOpenClip: (projectId: string, clipId: string) => void;
     accessCode: string;
     setAccessCode: (c: string) => void;
 };
 
-export default function Home({ projects, running, onCreate, onOpen, accessCode, setAccessCode }: Props) {
+export default function Home({ projects, running, onCreate, onOpen, onOpenClip, accessCode, setAccessCode }: Props) {
     const [file, setFile] = useState<File | null>(null);
     const [length, setLength] = useState('auto');
     const [maxClips, setMaxClips] = useState(10);
@@ -60,6 +61,26 @@ export default function Home({ projects, running, onCreate, onOpen, accessCode, 
     const [asr, setAsr] = useState<AsrEngine>('local');
     const [language, setLanguage] = useState('english');
     const [asrQuality, setAsrQuality] = useState<AsrQuality>('fast');
+    const [gpu, setGpu] = useState<boolean | null>(null);
+
+    // check once whether free captions can use the graphics card (much faster)
+    useEffect(() => {
+        const nav = navigator as Navigator & { gpu?: { requestAdapter: () => Promise<unknown> } };
+        (nav.gpu ? nav.gpu.requestAdapter().then((a) => !!a).catch(() => false) : Promise.resolve(false)).then((ok) => {
+            setGpu(ok);
+            if (!ok) setAsrQuality('fastest');
+        });
+    }, []);
+
+    const topClips = useMemo(
+        () =>
+            projects
+                .filter((p) => p.status === 'ready')
+                .flatMap((p) => p.clips.map((c) => ({ p, c })))
+                .sort((a, b) => b.c.score - a.c.score)
+                .slice(0, 8),
+        [projects]
+    );
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
 
@@ -195,7 +216,9 @@ export default function Home({ projects, running, onCreate, onOpen, accessCode, 
                                         items={[{ id: 'fastest', label: 'Fastest' }, { id: 'fast', label: 'Balanced' }, { id: 'accurate', label: 'Most accurate' }]}
                                     />
                                 )}
-                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40–250 MB). On a slower PC or a long video, choose Fastest.</p>
+                                {gpu === true && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">✓ Your computer can use its graphics card for free captions, so they will be fast. Balanced or Most accurate work well.</p>}
+                                {gpu === false && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Your browser can’t use the graphics card here, so free captions run on the processor. “Fastest” is selected so long videos don’t take hours. Using Chrome or Edge, kept up to date, can help.</p>}
+                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40–250 MB).</p>
                             </div>
                         </details>
                         <details className="text-sm">
@@ -205,6 +228,27 @@ export default function Home({ projects, running, onCreate, onOpen, accessCode, 
                     </div>
                 </div>
             </section>
+
+            {topClips.length > 1 && projects.filter((p) => p.status === 'ready').length > 1 && (
+                <section>
+                    <h2 className="mb-1 text-xl font-bold">Best clips across all your videos</h2>
+                    <p className="mb-4 text-sm text-muted">Your highest-scoring moments from every project, ready to post first.</p>
+                    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+                        {topClips.map(({ p, c }) => (
+                            <button key={`${p.id}-${c.id}`} onClick={() => onOpenClip(p.id, c.id)} className="panel overflow-hidden text-left transition hover:border-accent/50">
+                                <div className="relative aspect-video bg-black/40">
+                                    {c.thumb && <img src={c.thumb} alt="" className="h-full w-full object-cover" />}
+                                    <span className="absolute top-2 left-2 rounded-md bg-accent px-1.5 text-xs font-extrabold text-ink">{c.score}</span>
+                                </div>
+                                <div className="p-3">
+                                    <p className="line-clamp-2 text-sm font-semibold">{c.title}</p>
+                                    <p className="truncate text-xs text-muted">{p.name}</p>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </section>
+            )}
 
             <section>
                 <h2 className="mb-4 text-xl font-bold">Your projects</h2>

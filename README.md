@@ -8,8 +8,10 @@ Turn long videos (podcasts, interviews, talks, streams) into short vertical clip
 - **Transcription** with word timings (OpenAI Whisper, via `/api/transcribe`).
 - **AI clip finder** (Claude, via `/api/highlights`): picks the best moments, scores each 0–100 with a hook / flow / value / shareability breakdown, and suggests a title, description, hashtags, keywords and emoji.
 - **Follow the speaker**: MediaPipe face detection builds a smooth crop path so vertical clips keep the speaker in frame. Manual framing and "fit + blur" are also available.
-- **8 caption templates** with word-by-word highlighting, keyword emphasis, auto emoji and top / middle / bottom placement.
-- **Editor**: live preview, transcript (click to seek, set start/end from a word, fix words), trim controls, timeline.
+- **18 caption templates** with word-by-word highlighting, keyword emphasis, auto emoji and top / middle / bottom placement.
+- **Timeline editor**: video track with thumbnails and trim handles, split / delete / restore, captions track (click to edit), effects track (draggable zooms, hook title, freeze), audio waveform with bleeps, keyboard shortcuts and undo.
+- **Effects**: facecam + gameplay split layout (auto facecam detection), punch-in zooms (auto on laughs), hook title, remove silences, freeze-frame ending, progress bar, animated emoji, swear filter with bleep, speaker colours.
+- **Extras**: watch all clips back to back, export all with a titles/descriptions file, title ideas, thumbnail maker, best clips across projects.
 - **Brand kit**: logo watermark on every export.
 - **Formats**: 9:16, 1:1, 16:9; export 720p or 1080p MP4, one clip or all, plus `.srt` captions.
 - **Projects** are saved in the browser (IndexedDB) so you can come back to them.
@@ -58,4 +60,4 @@ On Netlify, add the same variables under **Site configuration → Environment va
 - No YouTube-link import: downloading from YouTube breaks YouTube's terms. Upload files you own or have permission to use.
 - Next steps could include user accounts, AI B-roll and direct posting to social platforms.
 
-Caption fonts (Montserrat, Poppins, Anton, Bangers) are under the SIL Open Font License.
+Caption fonts (Montserrat, Poppins, Anton, Bangers, Press Start 2P, Bungee, Bebas Neue, Rubik, Luckiest Guy, Permanent Marker) are under the SIL Open Font License or Apache 2.0.

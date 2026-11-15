@@ -120,7 +120,8 @@ export function parseChatAnswer(text: string, duration: number): Clip[] {
                 description: String(c.description ?? ''),
                 hashtags: Array.isArray(c.hashtags) ? c.hashtags.map(String) : [],
                 keywords: Array.isArray(c.keywords) ? c.keywords.map(String) : [],
-                emojis: Array.isArray(c.emojis) ? c.emojis.filter((e: any) => e && e.word && e.emoji).map((e: any) => ({ word: String(e.word), emoji: String(e.emoji) })) : []
+                emojis: Array.isArray(c.emojis) ? c.emojis.filter((e: any) => e && e.word && e.emoji).map((e: any) => ({ word: String(e.word), emoji: String(e.emoji) })) : [],
+                altTitles: Array.isArray(c.altTitles) ? c.altTitles.map(String) : []
             } as Clip;
         })
         .filter((c) => c.end - c.start >= 3);

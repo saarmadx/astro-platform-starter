@@ -38,10 +38,23 @@ Keep the black window open while you use the app. Close it to stop.
    The FIRST time, the free speech model downloads (about 80-250 MB, once).
    Free captions run on your own computer, so they take a while: roughly as long
    as the video itself, often faster on a newer PC.
-5. Click a clip to edit: trim it, fix any wrong caption word (double-click it in
-   the transcript), change caption style, framing, colours.
-6. Export tab > "Export MP4". "Export all" on the clip grid downloads every clip.
-7. Optional: Brand kit (left menu) to add your logo to every clip.
+5. Click a clip to open the editor. The TIMELINE at the bottom works like a video
+   editor:
+     Space = play/pause   S = split at the playhead   Delete = cut the selected part
+     Z = add a zoom       Ctrl+Z = undo               drag the green handles to trim
+   Click a caption block in the timeline to fix its words.
+6. Editor tabs:
+     Captions  - 18 caption styles, colours, censor swear words (with bleep),
+                 animated emoji, speaker colours
+     Layout    - Facecam + gameplay split (for streams), follow speaker, fit + blur
+     Effects   - hook title at the top, zooms (or auto-zoom on laughs),
+                 remove silences, freeze-frame ending, progress bar
+     Post      - title ideas, description, hashtags
+     Thumbnail - make a thumbnail / Short cover with big text
+     Export    - MP4 (720p or 1080p) and captions file
+7. On the clip grid: "Watch all" plays every clip back to back; "Export all"
+   downloads every clip plus a text file with all titles and descriptions.
+8. Optional: Brand kit (left menu) to add your logo to every clip.
 
 
 TIPS
