@@ -5,6 +5,10 @@ export type Transcript = { language: string; words: Word[]; segments: Segment[];
 export type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud'; strength: number };
 
 export type ContentMode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-takes';
+/** where captions come from: free on this PC, or OpenAI (paid) */
+export type AsrEngine = 'local' | 'openai';
+/** how clips are picked: free laugh detector, free via Claude chat copy/paste, or Claude API (paid) */
+export type Picker = 'laughs' | 'chat' | 'api';
 
 export type SubScores = { hook: number; flow: number; value: number; shareability: number };
 
@@ -62,10 +66,20 @@ export type Project = {
     width: number;
     height: number;
     createdAt: number;
-    status: 'transcribing' | 'clipping' | 'ready' | 'error';
+    status: 'transcribing' | 'clipping' | 'awaiting-paste' | 'ready' | 'error';
     transcript?: Transcript;
     clips: Clip[];
     style: StyleSettings;
-    options: { minSeconds: number; maxSeconds: number; maxClips: number; topic: string; mode?: ContentMode };
+    options: {
+        minSeconds: number;
+        maxSeconds: number;
+        maxClips: number;
+        topic: string;
+        mode?: ContentMode;
+        asr?: AsrEngine;
+        asrQuality?: 'fast' | 'accurate';
+        language?: string;
+        picker?: Picker;
+    };
     thumb?: string;
 };

@@ -1,71 +1,69 @@
-CLIPSMITH - HOW TO RUN IT ON YOUR COMPUTER
-==========================================
-
-WHAT YOU NEED (one time)
-------------------------
-1) Node.js
-   Go to https://nodejs.org, download the "LTS" version and install it
-   (click Next / Continue through the installer).
-
-2) Two API keys (both are pay-as-you-go; a typical video costs a few cents)
-   - OpenAI key  -> makes the captions from speech
-       https://platform.openai.com/api-keys  -> "Create new secret key"
-       (add a small amount of credit under Settings > Billing)
-   - Anthropic key -> picks the best / funniest clips
-       https://console.anthropic.com  -> "API Keys" -> "Create Key"
-       (add a small amount of credit under Billing)
-   Keep these keys private. Never share them or post them online.
+CLIPSMITH - FREE, PRIVATE, ON YOUR OWN COMPUTER
+===============================================
+Nothing is put online. No keys or payment needed.
 
 
-START IT
---------
-1) Unzip this folder (right-click clipsmith.zip > Extract All > Extract).
+1) INSTALL NODE.JS (one time)
+-----------------------------
+Go to https://nodejs.org and click the green "Windows Installer (.msi)" button
+(scroll down below the black code box). Open it and click Next through everything.
+If a black window asks to install "Additional Tools" (Chocolatey/Python), just close it.
+Restart your computer afterwards.
 
-2) Windows: double-click  start-windows.bat
-   (if "Windows protected your PC" appears: click More info > Run anyway)
 
-   Mac: open the Terminal app, type  cd  and a space, drag this folder into
-   the Terminal window, press Enter, then type  bash start-mac.sh  and press Enter.
+2) START CLIPSMITH
+------------------
+Windows: double-click  start-windows.bat
+         (if "Windows protected your PC" appears: click More info > Run anyway)
+Mac:     open Terminal, type  cd  and a space, drag this folder into the window,
+         press Enter, then type  bash start-mac.sh  and press Enter.
 
-3) THE FIRST TIME ONLY, it asks for your two keys:
-   - Copy your OpenAI key, RIGHT-CLICK inside the black window to paste it, press Enter.
-   - Copy your Anthropic key, RIGHT-CLICK to paste it, press Enter.
-   (On Mac, paste with Cmd + V.)
-   It saves them for you. To change them later, double-click change-keys.bat.
-
-4) It then installs what it needs (a few minutes the first time) and opens
-   your browser. If it doesn't, open Chrome or Edge and go to:
-       http://localhost:4321/studio
-
+The first start installs what it needs (a few minutes). Then your browser opens.
+If it doesn't, open Chrome or Edge and go to:  http://localhost:4321/studio
 Keep the black window open while you use the app. Close it to stop.
-Next time, just double-click start-windows.bat again.
 
 
-MAKING CLIPS
-------------
-1) Drop in a video (start with a 5-10 minute one for your first try).
-2) Pick "Funny" (or another type), the clip length, 9:16 and a caption style.
-3) Click "Get clips in 1 click". Keep the tab open while it works:
-   extracting audio -> captions -> AI picks clips -> finding the speaker.
-4) Click a clip to edit: trim it, fix any wrong caption word (double-click it in
-   the transcript), change the caption style, framing or colours.
-5) Export tab -> "Export MP4". 720p takes about a minute per clip.
-   "Export all" on the clip grid downloads every clip.
-6) Optional: Brand kit (left menu) to add your logo to every clip.
+3) MAKE CLIPS (all free)
+------------------------
+1. Drop in a video. For your first try, use a short one (5-10 minutes).
+2. Choose the language spoken in the video.
+3. Choose how to pick clips:
+   - "With Claude chat" (best): the app makes your captions, then gives you a
+     prompt. Click "Copy prompt", open a new chat at claude.ai, paste it (Ctrl+V),
+     send, copy Claude's whole answer, paste it back into the app, click
+     "Create my clips".
+   - "Laugh detector": fully automatic. Finds where people burst out laughing.
+     Works best on podcasts/streams where people laugh out loud.
+4. Click "Get clips in 1 click". Keep the tab open.
+   The FIRST time, the free speech model downloads (about 80-250 MB, once).
+   Free captions run on your own computer, so they take a while: roughly as long
+   as the video itself, often faster on a newer PC.
+5. Click a clip to edit: trim it, fix any wrong caption word (double-click it in
+   the transcript), change caption style, framing, colours.
+6. Export tab > "Export MP4". "Export all" on the clip grid downloads every clip.
+7. Optional: Brand kit (left menu) to add your logo to every clip.
 
-Projects are saved in your browser. To keep editing an old project later,
-open it and select the same video file again when asked.
+
+TIPS
+----
+- Use Chrome or Edge.
+- "Caption settings" on the home screen: "More accurate (slower)" gives better
+  captions for hard-to-hear videos.
+- Projects are saved in your browser. To keep editing one later, open it and
+  select the same video file again when asked.
+- Optional paid speed-ups (not needed): double-click add-paid-keys.bat to add
+  OpenAI / Anthropic keys, then choose "OpenAI (paid, faster)" captions or
+  "Claude API" clip picking.
 
 
 IF SOMETHING GOES WRONG
 -----------------------
-- "Transcription failed (401)" or "AI request failed (401)", or "key is not set":
-  a key is wrong or missing. Double-click change-keys.bat and paste them again.
-- "(429)" or "insufficient quota": add credit to that account, or wait a minute.
-- 'npm' is not recognized / command not found: Node.js is not installed;
-  install it, then restart your computer and try again.
-- The page is blank or stuck: refresh it. Use Chrome or Edge.
-- Export is very slow: use 720p, and keep the tab visible.
-Send a screenshot of any error message and it can be fixed.
+- "Free captioning failed: Failed to fetch": you need internet the first time,
+  so the speech model can download. Check your connection and try again.
+- 'npm' is not recognized: Node.js isn't installed yet; install it and restart.
+- No clips from the laugh detector: the video has no loud laughs; use
+  "With Claude chat" instead.
+- The page is blank or stuck: refresh it.
+Send a screenshot of any error and it can be fixed.
 
 Only clip videos you own or have permission to use.

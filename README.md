@@ -14,6 +14,14 @@ Turn long videos (podcasts, interviews, talks, streams) into short vertical clip
 - **Formats**: 9:16, 1:1, 16:9; export 720p or 1080p MP4, one clip or all, plus `.srt` captions.
 - **Projects** are saved in the browser (IndexedDB) so you can come back to them.
 
+## Free mode (default)
+
+Nothing needs to be paid for:
+- **Captions** run on your own computer with Whisper (transformers.js in a web worker). The model downloads once from Hugging Face.
+- **Clip picking**: either the **laugh detector** (no AI: clips built around bursts of laughter) or **With Claude chat** (the app gives you a prompt with the transcript; paste it into claude.ai and paste the answer back).
+
+The paid options below are optional.
+
 ## Setup
 
 ```bash

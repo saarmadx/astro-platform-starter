@@ -1,4 +1,5 @@
 import { ENERGY_STEP, findAudioEvents, loudness } from './audio';
+import { decode16k, segmentsFromWords, transcribeChunk } from './localAsr';
 import { extractAudioChunks } from './video';
 import type { Clip, Project, Transcript } from './types';
 
@@ -19,8 +20,10 @@ export async function transcribeVideo(
     file: File,
     duration: number,
     accessCode: string,
-    onStatus: (label: string, ratio: number) => void
+    onStatus: (label: string, ratio: number) => void,
+    engine: { asr: 'local' | 'openai'; language: string; quality: 'fast' | 'accurate' } = { asr: 'local', language: 'english', quality: 'fast' }
 ): Promise<Transcript> {
+    if (engine.asr === 'local') return transcribeLocally(file, duration, onStatus, engine.language, engine.quality);
     const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r));
     const result: Transcript = { language: 'unknown', words: [], segments: [], energy: { step: ENERGY_STEP, db: [] } };
     for (let i = 0; i < chunks.length; i++) {
@@ -46,6 +49,46 @@ export async function transcribeVideo(
         result.segments.push(...part.segments.map((s) => ({ ...s, start: s.start + off, end: s.end + off })));
     }
     onStatus('Transcribed', 1);
+    return result;
+}
+
+/** Free: Whisper runs in this browser. Slower than OpenAI, but costs nothing. */
+async function transcribeLocally(
+    file: File,
+    duration: number,
+    onStatus: (label: string, ratio: number) => void,
+    language: string,
+    quality: 'fast' | 'accurate'
+): Promise<Transcript> {
+    const STEP = 120;
+    const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r * 0.15), STEP);
+    const result: Transcript = { language, words: [], segments: [], energy: { step: ENERGY_STEP, db: [] } };
+    const started = Date.now();
+    for (let i = 0; i < chunks.length; i++) {
+        try {
+            const db = await loudness(chunks[i].blob);
+            const expected = Math.round((chunks[i].offset - result.energy!.db.length * ENERGY_STEP) / ENERGY_STEP);
+            for (let k = 0; k < expected; k++) result.energy!.db.push(-90);
+            result.energy!.db.push(...db);
+        } catch {
+            result.energy = undefined;
+        }
+        const ratio = 0.15 + (0.85 * i) / chunks.length;
+        let label = `Making captions (free, on your PC): part ${i + 1} of ${chunks.length}`;
+        if (i > 0) {
+            const perChunk = (Date.now() - started) / i;
+            const mins = Math.ceil((perChunk * (chunks.length - i)) / 60000);
+            label += ` · about ${mins} min left`;
+        }
+        onStatus(label, ratio);
+        const audio = await decode16k(chunks[i].blob);
+        const words = await transcribeChunk(audio, chunks[i].offset, language, quality, (loaded, total) => {
+            if (total > 0) onStatus(`Downloading the free speech model, first time only (${Math.round(loaded / 1048576)} of ${Math.round(total / 1048576)} MB)`, ratio);
+        });
+        result.words.push(...words);
+    }
+    result.segments = segmentsFromWords(result.words);
+    onStatus('Captions ready', 1);
     return result;
 }
 

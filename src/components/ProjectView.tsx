@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
+import { findAudioEvents } from '../lib/audio';
+import { chatPrompt } from '../lib/prompts';
 import { renderClip } from '../lib/video';
-import type { Brand, ContentMode, Project } from '../lib/types';
-import { MODES } from './Home';
+import type { Brand, ContentMode, Picker, Project } from '../lib/types';
+import { MODES, PICKERS } from './Home';
 import type { LoadedVideo } from './Studio';
 import { Bar, fmt, scoreTone } from './ui';
 
@@ -16,6 +18,7 @@ type Props = {
     onRegenerate: (options: Project['options']) => void;
     onDelete: () => void;
     onChange: (p: Project) => void;
+    onPaste: (answer: string) => Promise<void>;
 };
 
 export function saveBlob(blob: Blob, name: string) {
@@ -28,7 +31,7 @@ export function saveBlob(blob: Blob, name: string) {
 
 export const safeName = (t: string) => t.replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'clip';
 
-export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onDelete, onChange }: Props) {
+export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onDelete, onChange, onPaste }: Props) {
     const [sort, setSort] = useState<'score' | 'time'>('score');
     const [batch, setBatch] = useState<{ i: number; n: number; ratio: number } | null>(null);
     const [batchError, setBatchError] = useState('');
@@ -97,6 +100,18 @@ export default function ProjectView({ project, video, progress, error, brand, on
                             </option>
                         ))}
                     </select>
+                    <select
+                        className="input !w-auto !py-2 text-sm"
+                        value={project.options.picker ?? 'laughs'}
+                        onChange={(e) => onChange({ ...project, options: { ...project.options, picker: e.target.value as Picker } })}
+                        aria-label="How to pick clips"
+                    >
+                        {PICKERS.map((m) => (
+                            <option key={m.id} value={m.id}>
+                                {m.label}
+                            </option>
+                        ))}
+                    </select>
                     <button className="btn-ghost" disabled={busy || !video} onClick={() => onRegenerate(project.options)}>
                         Find new clips
                     </button>
@@ -128,6 +143,8 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     <p className="text-xs text-muted">Keep this tab open. A one-hour video usually takes a few minutes.</p>
                 </div>
             )}
+            {project.status === 'awaiting-paste' && project.transcript && !progress && <PastePanel project={project} onPaste={onPaste} />}
+
             {(error || batchError) && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{error || batchError}</p>}
 
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
@@ -168,5 +185,68 @@ export default function ProjectView({ project, video, progress, error, brand, on
                 )}
             </div>
         </div>
+    );
+}
+
+/** Free clip picking: copy a prompt into a Claude chat, paste the answer back. */
+function PastePanel({ project, onPaste }: { project: Project; onPaste: (answer: string) => Promise<void> }) {
+    const [copied, setCopied] = useState(false);
+    const [answer, setAnswer] = useState('');
+    const [err, setErr] = useState('');
+    const [busy, setBusy] = useState(false);
+    const prompt = useMemo(() => {
+        const t = project.transcript!;
+        const o = project.options;
+        return chatPrompt(t.segments, findAudioEvents(t.energy, t.words), { mode: o.mode ?? 'funny', minSeconds: o.minSeconds, maxSeconds: o.maxSeconds, maxClips: o.maxClips, topic: o.topic });
+    }, [project.transcript, project.options]);
+
+    async function copy() {
+        try {
+            await navigator.clipboard.writeText(prompt);
+            setCopied(true);
+        } catch {
+            setErr('Copying failed. Click inside the grey box, press Ctrl+A then Ctrl+C.');
+        }
+    }
+
+    async function create() {
+        setErr('');
+        setBusy(true);
+        try {
+            await onPaste(answer);
+        } catch (e) {
+            setErr((e as Error).message);
+        } finally {
+            setBusy(false);
+        }
+    }
+
+    return (
+        <section className="panel flex flex-col gap-5 p-5 sm:p-6">
+            <div>
+                <h2 className="text-xl font-bold">Captions are ready. Now let Claude pick the clips (free)</h2>
+                <p className="mt-1 text-sm text-muted">Uses your normal Claude chat, so it costs nothing extra.</p>
+            </div>
+            <ol className="flex flex-col gap-4 text-sm">
+                <li className="flex flex-col gap-2">
+                    <span><b>1.</b> Copy the prompt (it includes your video’s transcript).</span>
+                    <div className="flex flex-wrap gap-2">
+                        <button className="btn-accent !py-2" onClick={copy}>{copied ? 'Copied ✓' : 'Copy prompt'}</button>
+                        <span className="self-center text-xs text-muted">{Math.round(prompt.length / 1000)}k characters</span>
+                    </div>
+                    <textarea readOnly value={prompt} className="input h-20 font-mono text-xs" aria-label="Prompt" onFocus={(e) => e.currentTarget.select()} />
+                </li>
+                <li className="flex flex-col gap-1">
+                    <span><b>2.</b> Open a <b>new chat</b> at <a href="https://claude.ai/new" target="_blank" rel="noreferrer">claude.ai</a>, paste it (Ctrl+V) and send.</span>
+                    <span className="text-xs text-muted">Very long videos may be too long for one chat; if so, cut the video into parts.</span>
+                </li>
+                <li className="flex flex-col gap-2">
+                    <span><b>3.</b> When Claude answers, copy its whole answer and paste it here:</span>
+                    <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} className="input h-32 font-mono text-xs" placeholder='[{"title": "...", "start": 12.3, ...}]' aria-label="Claude's answer" />
+                </li>
+            </ol>
+            {err && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{err}</p>}
+            <button className="btn-accent" disabled={!answer.trim() || busy} onClick={create}>{busy ? 'Creating clips…' : 'Create my clips'}</button>
+        </section>
     );
 }

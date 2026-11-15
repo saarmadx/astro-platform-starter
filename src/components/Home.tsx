@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { TEMPLATES } from '../lib/templates';
-import type { Aspect, ContentMode, Project } from '../lib/types';
+import { LANGUAGES } from '../lib/localAsr';
+import type { Aspect, AsrEngine, ContentMode, Picker, Project } from '../lib/types';
 import { TemplateSwatch } from './ui';
 
 export type NewProjectInput = {
@@ -26,6 +27,12 @@ export const MODES: { id: ContentMode; label: string; hint: string }[] = [
     { id: 'hot-takes', label: 'Hot takes', hint: 'Bold opinions, debates' }
 ];
 
+export const PICKERS: { id: Picker; label: string; hint: string }[] = [
+    { id: 'chat', label: 'With Claude chat', hint: 'Free · smartest · copy & paste once' },
+    { id: 'laughs', label: 'Laugh detector', hint: 'Free · automatic · needs audible laughs' },
+    { id: 'api', label: 'Claude API', hint: 'Paid · automatic · needs a key' }
+];
+
 const ASPECTS: { id: Aspect; label: string; hint: string }[] = [
     { id: '9:16', label: '9:16', hint: 'Shorts, TikTok, Reels' },
     { id: '1:1', label: '1:1', hint: 'Feed posts' },
@@ -48,6 +55,10 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
     const [template, setTemplate] = useState('punch');
     const [topic, setTopic] = useState('');
     const [mode, setMode] = useState<ContentMode>('funny');
+    const [picker, setPicker] = useState<Picker>('chat');
+    const [asr, setAsr] = useState<AsrEngine>('local');
+    const [language, setLanguage] = useState('english');
+    const [asrQuality, setAsrQuality] = useState<'fast' | 'accurate'>('fast');
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
 
@@ -67,7 +78,7 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
         const tpl = TEMPLATES.find((t) => t.id === template)!;
         setBusy(true);
         try {
-            await onCreate({ file, aspect, template, highlight: tpl.defaultHighlight, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode } });
+            await onCreate({ file, aspect, template, highlight: tpl.defaultHighlight, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality } });
         } catch (e) {
             setError((e as Error).message);
             setBusy(false);
@@ -113,6 +124,25 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
                     </div>
 
                     <div className="flex flex-col gap-5 border-t border-white/10 bg-white/[0.02] p-5 sm:p-8 lg:border-t-0 lg:border-l">
+                        <Option label="Language spoken in the video">
+                            <select className="input" value={language} onChange={(e) => setLanguage(e.target.value)}>
+                                {LANGUAGES.map((l) => (
+                                    <option key={l.id} value={l.id}>
+                                        {l.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </Option>
+                        <Option label="How to pick clips">
+                            <div className="grid gap-2 sm:grid-cols-3">
+                                {PICKERS.map((m) => (
+                                    <button key={m.id} onClick={() => setPicker(m.id)} className={`rounded-xl border px-3 py-2 text-left ${picker === m.id ? 'border-accent bg-accent/10' : 'border-white/10 hover:bg-white/5'}`}>
+                                        <span className="block text-sm font-bold">{m.label}</span>
+                                        <span className="block text-xs text-muted">{m.hint}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </Option>
                         <Option label="What are you looking for?">
                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
                                 {MODES.map((m) => (
@@ -149,6 +179,24 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
                         <Option label="Topics to look for (optional)">
                             <input className="input" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. money tips, funny stories" />
                         </Option>
+                        <details className="text-sm">
+                            <summary className="cursor-pointer text-muted">Caption settings</summary>
+                            <div className="mt-3 flex flex-col gap-3">
+                                <Segmented
+                                    value={asr}
+                                    onChange={(v) => setAsr(v as AsrEngine)}
+                                    items={[{ id: 'local', label: 'Free (on your PC)' }, { id: 'openai', label: 'OpenAI (paid, faster)' }]}
+                                />
+                                {asr === 'local' && (
+                                    <Segmented
+                                        value={asrQuality}
+                                        onChange={(v) => setAsrQuality(v as 'fast' | 'accurate')}
+                                        items={[{ id: 'fast', label: 'Faster' }, { id: 'accurate', label: 'More accurate (slower)' }]}
+                                    />
+                                )}
+                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 80–250 MB).</p>
+                            </div>
+                        </details>
                         <details className="text-sm">
                             <summary className="cursor-pointer text-muted">Access code</summary>
                             <input className="input mt-2" type="password" value={accessCode} onChange={(e) => setAccessCode(e.target.value)} placeholder="Only if your site uses one" />

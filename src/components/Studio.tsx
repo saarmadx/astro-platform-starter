@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { findClips, transcribeVideo } from '../lib/api';
+import { findAudioEvents } from '../lib/audio';
+import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
 import { analyseClip } from '../lib/faces';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
-import type { Brand, Project, StyleSettings } from '../lib/types';
+import type { Brand, Clip, Project, StyleSettings } from '../lib/types';
 import BrandKit from './BrandKit';
 import Editor from './Editor';
 import Home, { type NewProjectInput } from './Home';
@@ -79,37 +81,42 @@ export default function Studio() {
     /** transcribe (if needed) -> find clips -> reframe + thumbnails */
     async function run(project: Project, file: File, url: string, retranscribe: boolean) {
         let p = { ...project };
+        const o = p.options;
         setErrors((e) => ({ ...e, [p.id]: '' }));
         try {
             if (!p.transcript || retranscribe) {
                 p = { ...p, status: 'transcribing' };
                 update(p);
                 setStep(p.id, 'Loading video engine', 0.02);
-                const transcript = await transcribeVideo(file, p.duration, accessCode, (label, r) => setStep(p.id, label, 0.05 + r * 0.45));
-                if (transcript.words.length === 0) throw new Error('No speech was found in this video.');
+                const transcript = await transcribeVideo(file, p.duration, accessCode, (label, r) => setStep(p.id, label, 0.05 + r * 0.45), {
+                    asr: o.asr ?? 'local',
+                    language: o.language ?? 'english',
+                    quality: o.asrQuality ?? 'fast'
+                });
+                if (transcript.words.length === 0) throw new Error('No speech was found in this video. Check that the video language is set correctly.');
                 p = { ...p, transcript };
                 update(p);
             }
+            const picker = o.picker ?? 'laughs';
+            if (picker === 'chat') {
+                // wait for the creator to paste Claude's answer (see ProjectView)
+                p = { ...p, status: 'awaiting-paste' };
+                update(p);
+                return;
+            }
             p = { ...p, status: 'clipping' };
             update(p);
-            setStep(p.id, 'AI is finding the best moments', 0.55);
-            const clips = await findClips(p.transcript!, p.options, accessCode);
-            if (clips.length === 0) throw new Error('The AI did not find any clips. Try a different clip length.');
-            p = { ...p, clips };
-            update(p);
-            for (let i = 0; i < clips.length; i++) {
-                setStep(p.id, `Reframing clip ${i + 1} of ${clips.length}`, 0.7 + (0.3 * i) / clips.length);
-                try {
-                    const res = await analyseClip(url, clips[i].start, clips[i].end, p.style.aspect);
-                    clips[i] = { ...clips[i], track: res.track, thumb: res.thumb };
-                    p = { ...p, clips: [...clips], thumb: p.thumb ?? res.thumb };
-                    update(p);
-                } catch {
-                    /* reframing is optional; keep the clip centred */
-                }
+            let clips: Clip[];
+            if (picker === 'laughs') {
+                setStep(p.id, 'Finding the biggest laughs', 0.55);
+                clips = pickByLaughs(p.transcript!, findAudioEvents(p.transcript!.energy, p.transcript!.words), o, p.duration);
+                if (clips.length === 0) throw new Error('No laughs or loud reactions were found. Try "With Claude chat" to pick clips from what is said.');
+            } else {
+                setStep(p.id, 'AI is finding the best moments', 0.55);
+                clips = await findClips(p.transcript!, o, accessCode);
+                if (clips.length === 0) throw new Error('The AI did not find any clips. Try a different clip length.');
             }
-            p = { ...p, status: 'ready' };
-            update(p);
+            await finish(p, clips, url);
         } catch (e) {
             p = { ...p, status: 'error' };
             update(p);
@@ -118,6 +125,47 @@ export default function Studio() {
             setProgress((pr) => {
                 const n = { ...pr };
                 delete n[p.id];
+                return n;
+            });
+        }
+    }
+
+    /** reframe each clip around the speaker and grab thumbnails */
+    async function finish(project: Project, found: Clip[], url: string) {
+        const clips = [...found];
+        let p: Project = { ...project, clips, status: 'clipping' };
+        update(p);
+        for (let i = 0; i < clips.length; i++) {
+            setStep(p.id, `Reframing clip ${i + 1} of ${clips.length}`, 0.7 + (0.3 * i) / clips.length);
+            try {
+                const res = await analyseClip(url, clips[i].start, clips[i].end, p.style.aspect);
+                clips[i] = { ...clips[i], track: res.track, thumb: res.thumb };
+                p = { ...p, clips: [...clips], thumb: p.thumb ?? res.thumb };
+                update(p);
+            } catch {
+                /* reframing is optional; keep the clip centred */
+            }
+        }
+        p = { ...p, status: 'ready' };
+        update(p);
+    }
+
+    /** clips pasted back from a Claude chat */
+    async function pasteClips(id: string, answer: string) {
+        const p = projectsRef.current.find((x) => x.id === id);
+        const vid = videos[id];
+        if (!p) return;
+        const clips = parseChatAnswer(answer, p.duration); // throws a readable error
+        if (!vid) {
+            update({ ...p, clips, status: 'ready' });
+            return;
+        }
+        try {
+            await finish(p, clips, vid.url);
+        } finally {
+            setProgress((pr) => {
+                const n = { ...pr };
+                delete n[id];
                 return n;
             });
         }
@@ -225,6 +273,7 @@ export default function Studio() {
                             onAttach={(f) => attachVideo(current.id, f)}
                             onRegenerate={(o) => regenerate(current.id, o)}
                             onDelete={() => removeProject(current.id)}
+                            onPaste={(answer) => pasteClips(current.id, answer)}
                             onChange={update}
                         />
                     )}

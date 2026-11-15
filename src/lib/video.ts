@@ -53,17 +53,18 @@ export const CHUNK_SECONDS = 600;
 export async function extractAudioChunks(
     file: File,
     duration: number,
-    onProgress: (ratio: number) => void
+    onProgress: (ratio: number) => void,
+    chunkSeconds = CHUNK_SECONDS
 ): Promise<{ offset: number; blob: Blob }[]> {
     const ff = await getFFmpeg();
     const input = await mountInput(ff, file);
-    const count = Math.max(1, Math.ceil(duration / CHUNK_SECONDS));
+    const count = Math.max(1, Math.ceil(duration / chunkSeconds));
     const chunks: { offset: number; blob: Blob }[] = [];
     for (let i = 0; i < count; i++) {
-        const offset = i * CHUNK_SECONDS;
+        const offset = i * chunkSeconds;
         progressHandler = (r) => onProgress((i + r) / count);
         const out = `/chunk_${i}.mp3`;
-        const code = await ff.exec(['-ss', String(offset), '-t', String(CHUNK_SECONDS), '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', '-y', out]);
+        const code = await ff.exec(['-ss', String(offset), '-t', String(chunkSeconds), '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', '-y', out]);
         if (code !== 0) throw new Error('Could not read the audio track. Is this a valid video file?');
         const data = await ff.readFile(out);
         await ff.deleteFile(out);

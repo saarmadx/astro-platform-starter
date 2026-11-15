@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
 import Anthropic from '@anthropic-ai/sdk';
 import { checkAccess, json } from '../../lib/server';
+import { annotate, MODE_GUIDE, systemPrompt } from '../../lib/prompts';
 
 export const prerender = false;
 
@@ -10,44 +11,6 @@ const MODEL = 'claude-opus-5-5';
 type Segment = { start: number; end: number; text: string };
 type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud'; strength: number };
 type Mode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-takes';
-
-// ---------- what to look for, per content type ----------
-
-const MODE_GUIDE: Record<Mode, string> = {
-    viral: `Find the moments most likely to hold a stranger's attention: funny moments first, then surprising facts, strong opinions, emotional stories and useful advice. Mix types if the video has them.`,
-    funny: `Find the FUNNIEST moments. This channel lives on comedy, so be picky: only pick moments a stranger scrolling past would actually laugh at.
-
-Strong comedy signals:
-- A setup that pays off with a punchline, especially one the listener didn't see coming.
-- Banter and quick comebacks; someone getting roasted or teased and firing back.
-- Someone caught off guard: an unexpected answer, an embarrassing admission, a slip of the tongue.
-- Absurd or wildly exaggerated stories, ridiculous hypotheticals, bad ideas defended with total confidence.
-- Awkward moments: misunderstandings, a joke that bombs, an uncomfortable silence that becomes funny.
-- Self-deprecating jokes and people losing it and failing to keep a straight face.
-- Audio markers in the transcript: ((REACTION ...)) means a burst of sound with almost no words, usually laughter. A reaction right after a line is the strongest evidence that the line was funny. ((LOUD ...)) means excited or raised voices.
-
-Weak or bad picks, avoid them:
-- Inside jokes or callbacks that need earlier parts of the video to make sense.
-- People laughing while nothing funny is said in the clip itself (the cause was earlier, or it is just politeness).
-- Long rambling stories where the payoff is weak or missing.
-- Jokes that depend on what is on screen if the words alone do not carry it.
-
-Timing is everything in comedy:
-- Start at the setup, as late as possible while the joke still lands. Cut greetings, filler and slow lead-ins.
-- End 1 to 2 seconds after the punchline or the laugh. Never cut off the laugh, never let it drag on after.
-- Shorter is funnier: prefer 15 to 45 seconds unless the bit genuinely needs more (still respect the requested range).`,
-    insightful: `Find the most useful and surprising insights: clear advice, counter-intuitive facts, "I wish I knew this earlier" moments, and simple explanations of hard ideas. Each clip must teach one complete idea.`,
-    story: `Find the best stories: personal anecdotes with stakes, tension and a payoff or twist, and emotional moments. Each clip must contain a full story arc or one complete emotional beat.`,
-    'hot-takes': `Find the boldest opinions and debates: controversial takes, disagreements, predictions and strong reactions that make viewers want to comment. Each clip must state the take clearly and include the best argument for it.`
-};
-
-const BASE_RULES = `General rules:
-- Every clip must work for someone who has not seen the rest of the video.
-- The first 3 seconds must hook: a bold line, a question, a laugh, a surprise. Never start mid-sentence or on filler ("so", "um", "yeah").
-- End on a complete thought or a punchline, never mid-sentence.
-- Start and end times must come from the transcript timestamps.
-- Clips must not overlap.
-- Write in the same language as the transcript.`;
 
 // ---------- schemas ----------
 
@@ -127,19 +90,6 @@ type Clip = {
 
 // ---------- helpers ----------
 
-/** Transcript lines with audio markers merged in by time. */
-function annotate(segments: Segment[], events: AudioEvent[], from = 0, to = Infinity): string {
-    const lines: { t: number; text: string }[] = [];
-    for (const s of segments) if (s.end > from && s.start < to) lines.push({ t: s.start, text: `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}` });
-    for (const e of events) {
-        if (e.end <= from || e.start >= to) continue;
-        const len = (e.end - e.start).toFixed(1);
-        const label = e.type === 'reaction' ? `((REACTION: laughter or loud reaction, ${len}s))` : `((LOUD: raised voices, ${len}s))`;
-        lines.push({ t: e.start + 0.001, text: `[${e.start.toFixed(1)}] ${label}` });
-    }
-    return lines.sort((a, b) => a.t - b.t).map((l) => l.text).join('\n');
-}
-
 async function ask<T>(system: string, user: string, schema: { [key: string]: unknown }, effort: 'medium' | 'high'): Promise<T> {
     const stream = client.beta.messages.stream({
         model: MODEL,
@@ -190,11 +140,7 @@ export const POST: APIRoute = async ({ request }) => {
     const videoEnd = Math.max(body.duration ?? 0, segments[segments.length - 1].end);
     const focus = body.topic?.trim() ? `\nThe creator especially wants moments about: ${body.topic.trim().slice(0, 200)}` : '';
 
-    const system = `You are a top short-form video editor who turns long videos (podcasts, streams, interviews, vlogs) into YouTube Shorts, TikToks and Reels that people watch to the end and share.
-
-${MODE_GUIDE[mode]}
-
-${BASE_RULES}`;
+    const system = systemPrompt(mode);
 
     try {
         // Pass 1: scout the whole transcript for many candidates
