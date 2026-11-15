@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { TEMPLATES } from '../lib/templates';
-import type { Aspect, Project } from '../lib/types';
+import type { Aspect, ContentMode, Project } from '../lib/types';
 import { TemplateSwatch } from './ui';
 
 export type NewProjectInput = {
@@ -16,6 +16,14 @@ const LENGTHS = [
     { id: 'short', label: 'Under 30s', min: 10, max: 30 },
     { id: 'mid', label: '30–60s', min: 30, max: 60 },
     { id: 'long', label: '60–90s', min: 60, max: 90 }
+];
+
+export const MODES: { id: ContentMode; label: string; hint: string }[] = [
+    { id: 'viral', label: 'Most viral', hint: 'Best of everything' },
+    { id: 'funny', label: 'Funny', hint: 'Jokes, banter, reactions' },
+    { id: 'insightful', label: 'Insightful', hint: 'Advice and facts' },
+    { id: 'story', label: 'Stories', hint: 'Anecdotes with a payoff' },
+    { id: 'hot-takes', label: 'Hot takes', hint: 'Bold opinions, debates' }
 ];
 
 const ASPECTS: { id: Aspect; label: string; hint: string }[] = [
@@ -39,6 +47,7 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
     const [aspect, setAspect] = useState<Aspect>('9:16');
     const [template, setTemplate] = useState('punch');
     const [topic, setTopic] = useState('');
+    const [mode, setMode] = useState<ContentMode>('funny');
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
 
@@ -58,7 +67,7 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
         const tpl = TEMPLATES.find((t) => t.id === template)!;
         setBusy(true);
         try {
-            await onCreate({ file, aspect, template, highlight: tpl.defaultHighlight, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic } });
+            await onCreate({ file, aspect, template, highlight: tpl.defaultHighlight, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode } });
         } catch (e) {
             setError((e as Error).message);
             setBusy(false);
@@ -104,6 +113,16 @@ export default function Home({ projects, onCreate, onOpen, accessCode, setAccess
                     </div>
 
                     <div className="flex flex-col gap-5 border-t border-white/10 bg-white/[0.02] p-5 sm:p-8 lg:border-t-0 lg:border-l">
+                        <Option label="What are you looking for?">
+                            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                                {MODES.map((m) => (
+                                    <button key={m.id} onClick={() => setMode(m.id)} className={`rounded-xl border px-3 py-2 text-left ${mode === m.id ? 'border-accent bg-accent/10' : 'border-white/10 hover:bg-white/5'}`}>
+                                        <span className="block text-sm font-bold">{m.label}</span>
+                                        <span className="block text-xs text-muted">{m.hint}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </Option>
                         <Option label="Clip length">
                             <Segmented value={length} onChange={setLength} items={LENGTHS.map((l) => ({ id: l.id, label: l.label }))} />
                         </Option>

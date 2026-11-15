@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { renderClip } from '../lib/video';
-import type { Brand, Project } from '../lib/types';
+import type { Brand, ContentMode, Project } from '../lib/types';
+import { MODES } from './Home';
 import type { LoadedVideo } from './Studio';
 import { Bar, fmt, scoreTone } from './ui';
 
@@ -84,6 +85,18 @@ export default function ProjectView({ project, video, progress, error, brand, on
                             </button>
                         ))}
                     </div>
+                    <select
+                        className="input !w-auto !py-2 text-sm"
+                        value={project.options.mode ?? 'viral'}
+                        onChange={(e) => onChange({ ...project, options: { ...project.options, mode: e.target.value as ContentMode } })}
+                        aria-label="Type of moments to find"
+                    >
+                        {MODES.map((m) => (
+                            <option key={m.id} value={m.id}>
+                                {m.label}
+                            </option>
+                        ))}
+                    </select>
                     <button className="btn-ghost" disabled={busy || !video} onClick={() => onRegenerate(project.options)}>
                         Find new clips
                     </button>
@@ -125,6 +138,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
                             <span className={`absolute top-3 left-3 rounded-lg px-2 py-1 text-sm font-extrabold ${scoreTone(c.score)}`}>{c.score}</span>
                             <span className="absolute right-3 bottom-3 rounded-md bg-black/70 px-1.5 py-0.5 text-xs font-semibold tabular-nums">{fmt(c.end - c.start)}</span>
                             <span className="absolute bottom-3 left-3 rounded-md bg-black/70 px-1.5 py-0.5 text-xs text-white/80">#{i + 1}</span>
+                            {c.category && <span className="absolute top-3 right-3 rounded-md bg-black/70 px-2 py-1 text-xs font-semibold">{c.category}</span>}
                         </div>
                         <div className="flex grow flex-col gap-2 p-4">
                             <p className="leading-snug font-semibold">{c.title}</p>
@@ -132,7 +146,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
                             <div className="mt-auto flex flex-col gap-1 pt-2">
                                 <Bar label="Hook" value={c.subscores.hook} />
                                 <Bar label="Flow" value={c.subscores.flow} />
-                                <Bar label="Value" value={c.subscores.value} />
+                                <Bar label={c.category === 'Funny' ? 'Funny' : 'Value'} value={c.subscores.value} />
                                 <Bar label="Shareable" value={c.subscores.shareability} />
                             </div>
                         </div>

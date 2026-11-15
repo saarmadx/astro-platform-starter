@@ -21,6 +21,8 @@ export const POST: APIRoute = async ({ request }) => {
     upstream.append('file', file, file.name || 'audio.mp3');
     upstream.append('model', 'whisper-1');
     upstream.append('response_format', 'verbose_json');
+    // nudges Whisper to keep fillers and laughter, which matter for comedic timing
+    upstream.append('prompt', 'Umm, so like, okay... Haha! Wait, wait, no way. (laughs) Hmm, I mean, yeah.');
     upstream.append('timestamp_granularities[]', 'word');
     upstream.append('timestamp_granularities[]', 'segment');
 

@@ -1,6 +1,10 @@
 export type Word = { text: string; start: number; end: number };
 export type Segment = { start: number; end: number; text: string };
-export type Transcript = { language: string; words: Word[]; segments: Segment[] };
+export type Energy = { step: number; db: number[] };
+export type Transcript = { language: string; words: Word[]; segments: Segment[]; energy?: Energy };
+export type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud'; strength: number };
+
+export type ContentMode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-takes';
 
 export type SubScores = { hook: number; flow: number; value: number; shareability: number };
 
@@ -13,6 +17,8 @@ export type Clip = {
     score: number;
     subscores: SubScores;
     reason: string;
+    /** what kind of moment this is, e.g. Funny, Insight, Story */
+    category?: string;
     description: string;
     hashtags: string[];
     /** words (lowercase) the captions should emphasise */
@@ -60,6 +66,6 @@ export type Project = {
     transcript?: Transcript;
     clips: Clip[];
     style: StyleSettings;
-    options: { minSeconds: number; maxSeconds: number; maxClips: number; topic: string };
+    options: { minSeconds: number; maxSeconds: number; maxClips: number; topic: string; mode?: ContentMode };
     thumb?: string;
 };

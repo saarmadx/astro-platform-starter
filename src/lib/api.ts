@@ -1,5 +1,6 @@
+import { ENERGY_STEP, findAudioEvents, loudness } from './audio';
 import { extractAudioChunks } from './video';
-import type { Clip, Transcript } from './types';
+import type { Clip, Project, Transcript } from './types';
 
 function headers(accessCode: string): Record<string, string> {
     return accessCode ? { 'x-access-code': accessCode } : {};
@@ -21,8 +22,17 @@ export async function transcribeVideo(
     onStatus: (label: string, ratio: number) => void
 ): Promise<Transcript> {
     const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r));
-    const result: Transcript = { language: 'unknown', words: [], segments: [] };
+    const result: Transcript = { language: 'unknown', words: [], segments: [], energy: { step: ENERGY_STEP, db: [] } };
     for (let i = 0; i < chunks.length; i++) {
+        try {
+            // pad or trim so each chunk lines up exactly with its time offset
+            const db = await loudness(chunks[i].blob);
+            const expected = Math.round((chunks[i].offset - result.energy!.db.length * ENERGY_STEP) / ENERGY_STEP);
+            for (let k = 0; k < expected; k++) result.energy!.db.push(-90);
+            result.energy!.db.push(...db);
+        } catch {
+            result.energy = undefined; // loudness is a bonus signal; carry on without it
+        }
         onStatus(`Transcribing part ${i + 1} of ${chunks.length}`, i / chunks.length);
         const form = new FormData();
         form.append('file', new File([chunks[i].blob], `chunk_${i}.mp3`, { type: 'audio/mpeg' }));
@@ -31,6 +41,7 @@ export async function transcribeVideo(
         const part = (await res.json()) as Transcript;
         const off = chunks[i].offset;
         if (result.language === 'unknown') result.language = part.language;
+        if (result.energy && result.energy.db.length === 0) result.energy = undefined;
         result.words.push(...part.words.map((w) => ({ ...w, start: w.start + off, end: w.end + off })));
         result.segments.push(...part.segments.map((s) => ({ ...s, start: s.start + off, end: s.end + off })));
     }
@@ -40,13 +51,13 @@ export async function transcribeVideo(
 
 export async function findClips(
     transcript: Transcript,
-    options: { minSeconds: number; maxSeconds: number; maxClips: number; topic: string },
+    options: Project['options'],
     accessCode: string
 ): Promise<Clip[]> {
     const res = await fetch('/api/highlights', {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers(accessCode) },
-        body: JSON.stringify({ segments: transcript.segments, ...options })
+        body: JSON.stringify({ segments: transcript.segments, events: findAudioEvents(transcript.energy, transcript.words), duration: transcript.segments.at(-1)?.end ?? 0, ...options })
     });
     if (!res.ok) throw new Error(await readError(res));
     const data = (await res.json()) as { clips: Omit<Clip, 'id'>[] };

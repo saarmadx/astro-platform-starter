@@ -167,6 +167,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                         ←
                     </button>
                     <span className={`rounded-lg px-2 py-1 text-sm font-extrabold ${scoreTone(clip.score)}`}>{clip.score}</span>
+                    {clip.category && <span className="hidden rounded-lg bg-white/10 px-2 py-1 text-xs font-semibold sm:inline">{clip.category}</span>}
                     <input className="min-w-0 grow bg-transparent text-lg font-bold outline-none focus:underline" value={clip.title} onChange={(e) => setClip({ title: e.target.value })} aria-label="Clip title" />
                 </div>
                 <div className="flex gap-2">
@@ -346,7 +347,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 <div className="flex flex-col gap-1.5">
                                     <Bar label="Hook" value={clip.subscores.hook} />
                                     <Bar label="Flow" value={clip.subscores.flow} />
-                                    <Bar label="Value" value={clip.subscores.value} />
+                                    <Bar label={clip.category === 'Funny' ? 'Funny' : 'Value'} value={clip.subscores.value} />
                                     <Bar label="Shareable" value={clip.subscores.shareability} />
                                 </div>
                                 <p className="text-sm text-muted">{clip.reason}</p>
