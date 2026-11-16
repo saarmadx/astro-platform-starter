@@ -26,6 +26,7 @@ type Props = {
     onDelete: () => void;
     onChange: (p: Project) => void;
     onPaste: (answer: string) => Promise<void>;
+    onSwitchCaptions: () => void;
 };
 
 export function saveBlob(blob: Blob, name: string) {
@@ -38,7 +39,7 @@ export function saveBlob(blob: Blob, name: string) {
 
 export const safeName = (t: string) => t.replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'clip';
 
-export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onDelete, onChange, onPaste }: Props) {
+export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onDelete, onChange, onPaste, onSwitchCaptions }: Props) {
     const [sort, setSort] = useState<'score' | 'time'>('score');
     const [batch, setBatch] = useState<{ i: number; n: number; ratio: number } | null>(null);
     const [batchError, setBatchError] = useState('');
@@ -180,7 +181,14 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     <div className="h-2 overflow-hidden rounded-full bg-white/10">
                         <div className="h-full rounded-full bg-accent transition-all" style={{ width: `${Math.round(progress.ratio * 100)}%` }} />
                     </div>
-                    <p className="text-xs text-muted">Keep this tab open. A one-hour video usually takes a few minutes.</p>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-xs text-muted">Keep this tab open. Free captions run on your PC, so long videos take a while.</p>
+                        {project.status === 'transcribing' && (project.options.asr ?? 'local') === 'local' && (project.options.asrQuality ?? 'fast') !== 'fastest' && (
+                            <button className="btn-ghost !py-1.5 text-xs" onClick={onSwitchCaptions}>
+                                Too slow? Switch to faster captions ({({ best: 'Accurate', accurate: 'Balanced', fast: 'Fastest' } as Record<string, string>)[project.options.asrQuality ?? 'fast']})
+                            </button>
+                        )}
+                    </div>
                 </div>
             )}
             {(project.status === 'transcribing' || project.status === 'clipping') && !progress && (

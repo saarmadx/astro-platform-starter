@@ -64,15 +64,19 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     const [language, setLanguage] = useState('english');
     const [asrQuality, setAsrQuality] = useState<AsrQuality>('fast');
     const [gpu, setGpu] = useState<boolean | null>(null);
+    const [f16, setF16] = useState(false);
     const [chatFile, setChatFile] = useState<File | null>(null);
     const [backupMsg, setBackupMsg] = useState('');
 
     // check once whether free captions can use the graphics card (much faster)
     useEffect(() => {
-        const nav = navigator as Navigator & { gpu?: { requestAdapter: () => Promise<unknown> } };
-        (nav.gpu ? nav.gpu.requestAdapter().then((a) => !!a).catch(() => false) : Promise.resolve(false)).then((ok) => {
-            setGpu(ok);
-            setAsrQuality(ok ? 'best' : 'fast');
+        const nav = navigator as Navigator & { gpu?: { requestAdapter: () => Promise<{ features: Set<string> } | null> } };
+        (nav.gpu ? nav.gpu.requestAdapter().catch(() => null) : Promise.resolve(null)).then((a) => {
+            const half = !!a?.features.has('shader-f16');
+            setGpu(!!a);
+            setF16(half);
+            // "Best" is a big download, so it is never the default; "Accurate" is a good balance
+            setAsrQuality(a ? 'accurate' : 'fast');
         });
     }, []);
 
@@ -229,13 +233,13 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                             { id: 'fastest', label: 'Fastest' },
                                             { id: 'fast', label: 'Balanced' },
                                             { id: 'accurate', label: 'Accurate' },
-                                            ...(gpu ? [{ id: 'best', label: 'Best' }] : [])
+                                            ...(gpu && f16 ? [{ id: 'best', label: 'Best (big download)' }] : [])
                                         ]}
                                     />
                                 )}
-                                {gpu === true && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">✓ Your computer can use its graphics card, so “Best” is selected: the most accurate captions (a one-time ~1 GB download). Choose Accurate if your internet is slow.</p>}
+                                {gpu === true && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">✓ Your computer can use its graphics card, so captions will be fast. “Accurate” is selected (about 250 MB, downloaded once).{f16 ? ' “Best” is a little more accurate but a ~1.4 GB download.' : ''}</p>}
                                 {gpu === false && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Your browser can’t use the graphics card here, so free captions run on the processor. “Balanced” is selected; choose Accurate for better captions if you can wait longer, or Fastest for long videos. Up-to-date Chrome or Edge can help.</p>}
-                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40 MB for Fastest, up to ~1 GB for Best). You can fix any misheard words afterwards in the editor.</p>
+                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40 MB for Fastest, 250 MB for Accurate, ~1.4 GB for Best). You can fix any misheard words afterwards in the editor.</p>
                             </div>
                         </details>
                         <details className="text-sm">

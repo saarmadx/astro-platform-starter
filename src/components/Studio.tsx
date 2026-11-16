@@ -4,7 +4,7 @@ import { projectEvents } from '../lib/audio';
 import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
 import { chatSpikes, parseChat } from '../lib/chat';
 import { analyseClip } from '../lib/faces';
-import { cleanWords } from '../lib/localAsr';
+import { cancelTranscription, cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
 import type { Brand, Clip, Project, StyleSettings } from '../lib/types';
 import BrandKit from './BrandKit';
@@ -81,62 +81,79 @@ export default function Studio() {
         saveProject(p);
     }, []);
 
+    const runTokens = useRef<Record<string, number>>({});
     const setStep = (id: string, label: string, ratio: number) => setProgress((pr) => ({ ...pr, [id]: { label, ratio } }));
 
     /** transcribe (if needed) -> find clips -> reframe + thumbnails */
-    async function run(project: Project, file: File, url: string, retranscribe: boolean) {
+    const runPromises = useRef<Record<string, Promise<void>>>({});
+    function run(project: Project, file: File, url: string, retranscribe: boolean): Promise<void> {
+        const job = runJob(project, file, url, retranscribe);
+        runPromises.current[project.id] = job;
+        return job;
+    }
+
+    async function runJob(project: Project, file: File, url: string, retranscribe: boolean) {
+        // a newer run for the same project (e.g. after switching caption speed) replaces this one
+        const token = (runTokens.current[project.id] ?? 0) + 1;
+        runTokens.current[project.id] = token;
+        const live = () => runTokens.current[project.id] === token;
+        const save = (x: Project) => live() && update(x);
+        const step = (label: string, r: number) => live() && setStep(project.id, label, r);
         let p = { ...project };
         const o = p.options;
         setErrors((e) => ({ ...e, [p.id]: '' }));
         try {
             if (!p.transcript || retranscribe) {
                 p = { ...p, status: 'transcribing' };
-                update(p);
-                setStep(p.id, 'Loading video engine', 0.02);
+                save(p);
+                step('Loading video engine', 0.02);
                 const key = `${o.asr ?? 'local'}|${o.language ?? 'english'}|${o.asrQuality ?? 'fast'}`;
                 const resume = p.partial && p.partial.key === key ? p.partial : undefined;
                 const transcript = await transcribeVideo(
                     file,
                     p.duration,
                     accessCode,
-                    (label, r) => setStep(p.id, label, 0.05 + r * 0.45),
+                    (label, r) => step(label, 0.05 + r * 0.45),
                     { asr: o.asr ?? 'local', language: o.language ?? 'english', quality: o.asrQuality ?? 'fast' },
                     resume,
                     (state) => {
                         p = { ...p, partial: { key, ...state } };
-                        update(p);
-                    }
+                        save(p);
+                    },
+                    () => !live()
                 );
                 if (transcript.words.length === 0) throw new Error('No speech was found in this video. Check that the video language is set correctly.');
                 p = { ...p, transcript, partial: undefined };
-                update(p);
+                save(p);
             }
             const picker = o.picker ?? 'laughs';
             if (picker === 'chat') {
                 // wait for the creator to paste Claude's answer (see ProjectView)
                 p = { ...p, status: 'awaiting-paste' };
-                update(p);
+                save(p);
                 return;
             }
             p = { ...p, status: 'clipping' };
-            update(p);
+            save(p);
             let clips: Clip[];
             if (picker === 'laughs') {
-                setStep(p.id, 'Finding the biggest laughs', 0.55);
+                step('Finding the biggest laughs', 0.55);
                 clips = pickByLaughs(p.transcript!, projectEvents(p), o, p.duration);
                 if (clips.length === 0) throw new Error('No laughs or loud reactions were found. Try "With Claude chat" to pick clips from what is said.');
             } else {
-                setStep(p.id, 'AI is finding the best moments', 0.55);
+                step('AI is finding the best moments', 0.55);
                 clips = await findClips(p.transcript!, o, accessCode);
                 if (clips.length === 0) throw new Error('The AI did not find any clips. Try a different clip length.');
             }
-            await finish(p, clips, url);
+            if (live()) await finish(p, clips, url);
         } catch (e) {
+            if (!live()) return;
             p = { ...p, status: 'error' };
-            update(p);
-            setErrors((er) => ({ ...er, [p.id]: (e as Error).message }));
+            save(p);
+            const msg = e instanceof Error ? e.message : String(e);
+            setErrors((er) => ({ ...er, [p.id]: /FS error|ErrnoError/.test(msg) ? 'The video engine had a hiccup. Click “Continue” to try again.' : msg }));
         } finally {
-            setProgress((pr) => {
+            if (live()) setProgress((pr) => {
                 const n = { ...pr };
                 delete n[p.id];
                 return n;
@@ -220,6 +237,24 @@ export default function Studio() {
         setVideos((v) => ({ ...v, [id]: { file, url: URL.createObjectURL(file) } }));
     }
 
+    /** Captioning too slow: stop it and start again with a lighter caption setting. */
+    async function switchCaptions(id: string) {
+        const p = projectsRef.current.find((x) => x.id === id);
+        const vid = videos[id];
+        if (!p || !vid) return;
+        // stop the current run, and wait until it has really stopped (it may be busy reading the audio)
+        runTokens.current[id] = (runTokens.current[id] ?? 0) + 1;
+        setStep(id, 'Switching to faster captions', 0.03);
+        const order = ['best', 'accurate', 'fast', 'fastest'] as const;
+        const cur = p.options.asrQuality ?? 'fast';
+        const next = order[Math.min(order.length - 1, order.indexOf(cur) + 1)];
+        cancelTranscription();
+        await runPromises.current[id]?.catch(() => {});
+        const np: Project = { ...p, options: { ...p.options, asrQuality: next }, partial: undefined, transcript: undefined };
+        update(np);
+        run(np, vid.file, vid.url, true);
+    }
+
     function regenerate(id: string, options: Project['options']) {
         const p = projectsRef.current.find((x) => x.id === id);
         const vid = videos[id];
@@ -289,6 +324,7 @@ export default function Studio() {
                             onRegenerate={(o) => regenerate(current.id, o)}
                             onDelete={() => removeProject(current.id)}
                             onPaste={(answer) => pasteClips(current.id, answer)}
+                            onSwitchCaptions={() => switchCaptions(current.id)}
                             onChange={update}
                         />
                     )}

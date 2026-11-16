@@ -36,6 +36,19 @@ export function modelFor(language: string, quality: AsrQuality): string {
 
 let worker: Worker | null = null;
 let nextId = 1;
+const pending = new Set<(e: Error) => void>();
+
+/** Stops captioning right away (used by "switch to faster captions"). */
+export function cancelTranscription() {
+    worker?.terminate();
+    worker = null;
+    for (const reject of pending) reject(new Error('cancelled'));
+    pending.clear();
+}
+
+/** Error codes the caller can react to. */
+export const STUCK = 'stuck';
+export const NEEDS_F16 = 'needs-f16';
 
 function getWorker(): Worker {
     if (!worker) worker = new Worker(new URL('./whisper.worker.ts', import.meta.url), { type: 'module' });
@@ -62,7 +75,26 @@ export function transcribeChunk(
     const id = nextId++;
     const downloads: Record<string, { loaded: number; total: number }> = {};
     return new Promise((resolve, reject) => {
+        // watchdog: if nothing happens for a long time (e.g. a model too big for this PC), give up
+        let lastActivity = Date.now();
+        const limitMs = quality === 'best' ? 4 * 60_000 : 10 * 60_000;
+        const watchdog = setInterval(() => {
+            if (Date.now() - lastActivity > limitMs) finish(new Error(STUCK));
+        }, 5000);
+        const finish = (err: Error | null, words?: Word[]) => {
+            clearInterval(watchdog);
+            pending.delete(cancel);
+            w.removeEventListener('message', onMsg);
+            w.removeEventListener('error', onErr);
+            if (err) {
+                if (err.message === STUCK) cancelTranscription();
+                reject(err);
+            } else resolve(words!);
+        };
+        const cancel = (e: Error) => finish(e);
+        pending.add(cancel);
         const onMsg = (e: MessageEvent) => {
+            lastActivity = Date.now();
             const m = e.data;
             if (m.type === 'ready') {
                 usingGpu = !!m.gpu;
@@ -75,11 +107,9 @@ export function transcribeChunk(
                 return;
             }
             if (m.id !== id) return;
-            w.removeEventListener('message', onMsg);
-            w.removeEventListener('error', onErr);
             if (m.type === 'error') {
-                reject(new Error(`Free captioning failed: ${m.message}. Make sure you are online the first time (the speech model needs to download), and use Chrome or Edge.`));
-                return;
+                if (m.message === NEEDS_F16) return finish(new Error(NEEDS_F16));
+                return finish(new Error(`Free captioning failed: ${m.message}. Make sure you are online the first time (the speech model needs to download), and use Chrome or Edge.`));
             }
             const words: Word[] = [];
             for (const c of m.chunks as { text: string; timestamp: [number, number | null] }[]) {
@@ -99,13 +129,11 @@ export function transcribeChunk(
                     }
                 } else words.push({ text, start, end });
             }
-            resolve(words);
+            finish(null, words);
         };
         const onErr = () => {
-            w.removeEventListener('message', onMsg);
-            w.removeEventListener('error', onErr);
             worker = null;
-            reject(new Error('The free speech engine could not start. Use Chrome or Edge, then refresh the page.'));
+            finish(new Error('The free speech engine could not start. Use Chrome or Edge, then refresh the page.'));
         };
         w.addEventListener('message', onMsg);
         w.addEventListener('error', onErr);

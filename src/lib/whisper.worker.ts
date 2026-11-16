@@ -17,21 +17,29 @@ async function load(model: string, precise: boolean) {
         if (p.status === 'progress') post({ type: 'download', file: p.file, loaded: p.loaded ?? 0, total: p.total ?? 0 });
     };
     let useGpu = false;
+    let f16 = false;
     try {
-        const nav = navigator as Navigator & { gpu?: { requestAdapter: () => Promise<unknown> } };
-        useGpu = !!(nav.gpu && (await nav.gpu.requestAdapter()));
+        const nav = navigator as Navigator & { gpu?: { requestAdapter: () => Promise<{ features: Set<string> } | null> } };
+        const adapter = nav.gpu ? await nav.gpu.requestAdapter() : null;
+        useGpu = !!adapter;
+        f16 = !!adapter?.features.has('shader-f16');
     } catch {
         useGpu = false;
     }
+    const large = model.includes('large');
+    // the large "best" model only runs well on a graphics card with half-precision support
+    // (full precision is a 2.7 GB download that browsers can stall on)
+    if (large && !(useGpu && f16)) throw new Error('needs-f16');
     try {
         // graphics card: full-precision encoder; full-precision decoder too in the accurate modes
         // (the very large "best" model keeps a compressed decoder so it fits in memory)
-        const gpuDecoder = precise && !model.includes('large') ? 'fp32' : 'q4';
+        type Dt = 'fp16' | 'fp32' | 'q4';
+        const gpuDtype: Record<string, Dt> = large ? { encoder_model: 'fp16', decoder_model_merged: 'q4' } : { encoder_model: 'fp32', decoder_model_merged: precise ? 'fp32' : 'q4' };
         asr = (await pipeline('automatic-speech-recognition', model, useGpu
-            ? { device: 'webgpu', dtype: { encoder_model: 'fp32', decoder_model_merged: gpuDecoder }, progress_callback }
+            ? { device: 'webgpu', dtype: gpuDtype, progress_callback }
             : { device: 'wasm', dtype: 'q8', progress_callback })) as unknown as AsrFn;
     } catch (err) {
-        if (!useGpu) throw err;
+        if (!useGpu || large) throw err;
         // graphics card route failed: fall back to the processor
         asr = (await pipeline('automatic-speech-recognition', model, { device: 'wasm', dtype: 'q8', progress_callback })) as unknown as AsrFn;
         useGpu = false;

@@ -1,5 +1,5 @@
 import { ENERGY_STEP, findAudioEvents, loudness } from './audio';
-import { cleanWords, decode16k, segmentsFromWords, transcribeChunk, usingGpu } from './localAsr';
+import { cleanWords, decode16k, NEEDS_F16, segmentsFromWords, STUCK, transcribeChunk, usingGpu } from './localAsr';
 import { extractAudioChunks } from './video';
 import type { AsrQuality, Clip, Project, Transcript, Word } from './types';
 
@@ -25,9 +25,10 @@ export async function transcribeVideo(
     onStatus: (label: string, ratio: number) => void,
     engine: { asr: 'local' | 'openai'; language: string; quality: AsrQuality } = { asr: 'local', language: 'english', quality: 'fast' },
     resume?: LocalResume,
-    onChunkDone?: (state: LocalResume) => void
+    onChunkDone?: (state: LocalResume) => void,
+    isCancelled: () => boolean = () => false
 ): Promise<Transcript> {
-    if (engine.asr === 'local') return transcribeLocally(file, duration, onStatus, engine.language, engine.quality, resume, onChunkDone);
+    if (engine.asr === 'local') return transcribeLocally(file, duration, onStatus, engine.language, engine.quality, resume, onChunkDone, isCancelled);
     const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r));
     const result: Transcript = { language: 'unknown', words: [], segments: [], energy: { step: ENERGY_STEP, db: [] } };
     for (let i = 0; i < chunks.length; i++) {
@@ -64,11 +65,16 @@ async function transcribeLocally(
     language: string,
     quality: AsrQuality,
     resume?: LocalResume,
-    onChunkDone?: (state: LocalResume) => void
+    onChunkDone?: (state: LocalResume) => void,
+    isCancelled: () => boolean = () => false
 ): Promise<Transcript> {
+    const stopIfCancelled = () => {
+        if (isCancelled()) throw new Error('cancelled');
+    };
     const STEP = 120;
     const PAD = 3; // each piece overlaps its neighbours by 3s so no word is cut in half at a boundary
     const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r * 0.15), STEP, PAD);
+    stopIfCancelled();
     const first = resume && resume.nextChunk < chunks.length ? resume.nextChunk : 0;
     const result: Transcript = {
         language,
@@ -99,10 +105,29 @@ async function transcribeLocally(
             label += ` · about ${mins} min left`;
         }
         onStatus(label, ratio);
-        const audio = await decode16k(chunks[i].blob);
-        const words = await transcribeChunk(audio, chunks[i].offset, language, quality, (loaded, total) => {
-            if (total > 0) onStatus(`Downloading the free speech model, first time only (${Math.round(loaded / 1048576)} of ${Math.round(total / 1048576)} MB)`, ratio);
-        });
+        let words: Word[] = [];
+        for (let attempt = 0; attempt < 2; attempt++) {
+            stopIfCancelled();
+            const audio = await decode16k(chunks[i].blob);
+            try {
+                words = await transcribeChunk(audio, chunks[i].offset, language, quality, (loaded, total) => {
+                    if (total <= 0) return;
+                    if (loaded >= total * 0.999) onStatus('Getting the speech model ready (can take a minute)', ratio);
+                    else onStatus(`Downloading the free speech model, first time only (${Math.round(loaded / 1048576)} of ${Math.round(total / 1048576)} MB)`, ratio);
+                });
+                break;
+            } catch (e) {
+                const msg = (e as Error).message;
+                // "Best" can't run on this PC or got stuck: carry on with "Accurate"
+                if (quality === 'best' && (msg === NEEDS_F16 || msg === STUCK) && attempt === 0) {
+                    quality = 'accurate';
+                    onStatus('“Best” is too heavy for this PC, switching to “Accurate” captions', ratio);
+                    continue;
+                }
+                if (msg === STUCK) throw new Error('Captioning stopped responding. Try a faster caption setting (Accurate, Balanced or Fastest).');
+                throw e;
+            }
+        }
         // keep words whose middle falls in this piece's own stretch (the overlap belongs to the neighbour)
         result.words.push(...words.filter((w) => {
             const mid = (w.start + w.end) / 2;
