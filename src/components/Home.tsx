@@ -68,7 +68,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
         const nav = navigator as Navigator & { gpu?: { requestAdapter: () => Promise<unknown> } };
         (nav.gpu ? nav.gpu.requestAdapter().then((a) => !!a).catch(() => false) : Promise.resolve(false)).then((ok) => {
             setGpu(ok);
-            if (!ok) setAsrQuality('fastest');
+            setAsrQuality(ok ? 'best' : 'fast');
         });
     }, []);
 
@@ -213,12 +213,17 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                     <Segmented
                                         value={asrQuality}
                                         onChange={(v) => setAsrQuality(v as AsrQuality)}
-                                        items={[{ id: 'fastest', label: 'Fastest' }, { id: 'fast', label: 'Balanced' }, { id: 'accurate', label: 'Most accurate' }]}
+                                        items={[
+                                            { id: 'fastest', label: 'Fastest' },
+                                            { id: 'fast', label: 'Balanced' },
+                                            { id: 'accurate', label: 'Accurate' },
+                                            ...(gpu ? [{ id: 'best', label: 'Best' }] : [])
+                                        ]}
                                     />
                                 )}
-                                {gpu === true && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">✓ Your computer can use its graphics card for free captions, so they will be fast. Balanced or Most accurate work well.</p>}
-                                {gpu === false && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Your browser can’t use the graphics card here, so free captions run on the processor. “Fastest” is selected so long videos don’t take hours. Using Chrome or Edge, kept up to date, can help.</p>}
-                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40–250 MB).</p>
+                                {gpu === true && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">✓ Your computer can use its graphics card, so “Best” is selected: the most accurate captions (a one-time ~1 GB download). Choose Accurate if your internet is slow.</p>}
+                                {gpu === false && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Your browser can’t use the graphics card here, so free captions run on the processor. “Balanced” is selected; choose Accurate for better captions if you can wait longer, or Fastest for long videos. Up-to-date Chrome or Edge can help.</p>}
+                                <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40 MB for Fastest, up to ~1 GB for Best). You can fix any misheard words afterwards in the editor.</p>
                             </div>
                         </details>
                         <details className="text-sm">

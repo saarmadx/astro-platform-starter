@@ -11,7 +11,7 @@ let loadedModel = '';
 
 const post = (msg: unknown) => (self as unknown as Worker).postMessage(msg);
 
-async function load(model: string) {
+async function load(model: string, precise: boolean) {
     if (asr && loadedModel === model) return;
     const progress_callback = (p: { status: string; file?: string; progress?: number; loaded?: number; total?: number }) => {
         if (p.status === 'progress') post({ type: 'download', file: p.file, loaded: p.loaded ?? 0, total: p.total ?? 0 });
@@ -24,8 +24,11 @@ async function load(model: string) {
         useGpu = false;
     }
     try {
+        // graphics card: full-precision encoder; full-precision decoder too in the accurate modes
+        // (the very large "best" model keeps a compressed decoder so it fits in memory)
+        const gpuDecoder = precise && !model.includes('large') ? 'fp32' : 'q4';
         asr = (await pipeline('automatic-speech-recognition', model, useGpu
-            ? { device: 'webgpu', dtype: { encoder_model: 'fp32', decoder_model_merged: 'q4' }, progress_callback }
+            ? { device: 'webgpu', dtype: { encoder_model: 'fp32', decoder_model_merged: gpuDecoder }, progress_callback }
             : { device: 'wasm', dtype: 'q8', progress_callback })) as unknown as AsrFn;
     } catch (err) {
         if (!useGpu) throw err;
@@ -38,17 +41,19 @@ async function load(model: string) {
 }
 
 self.onmessage = async (e: MessageEvent) => {
-    const { id, audio, model, language } = e.data as { id: number; audio: Float32Array; model: string; language: string };
+    const { id, audio, model, language, precise } = e.data as { id: number; audio: Float32Array; model: string; language: string; precise: boolean };
     try {
-        await load(model);
+        await load(model, precise);
         const englishOnly = model.endsWith('.en');
-        const out = await asr!(audio, {
-            return_timestamps: 'word',
-            chunk_length_s: 30,
-            stride_length_s: 5,
-            ...(englishOnly ? {} : { language, task: 'transcribe' })
-        });
-        post({ type: 'result', id, chunks: out.chunks ?? [] });
+        const opts = { chunk_length_s: 30, stride_length_s: 5, ...(englishOnly ? {} : { language, task: 'transcribe' }) };
+        try {
+            const out = await asr!(audio, { ...opts, return_timestamps: 'word' });
+            post({ type: 'result', id, level: 'word', chunks: out.chunks ?? [] });
+        } catch {
+            // some models can't time single words: fall back to phrase timings (words are spread across each phrase)
+            const out = await asr!(audio, { ...opts, return_timestamps: true });
+            post({ type: 'result', id, level: 'segment', chunks: out.chunks ?? [] });
+        }
     } catch (err) {
         post({ type: 'error', id, message: err instanceof Error ? err.message : String(err) });
     }

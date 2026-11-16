@@ -9,7 +9,7 @@ export type ContentMode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-take
 export type AsrEngine = 'local' | 'openai';
 /** how clips are picked: free laugh detector, free via Claude chat copy/paste, or Claude API (paid) */
 export type Picker = 'laughs' | 'chat' | 'api';
-export type AsrQuality = 'fastest' | 'fast' | 'accurate';
+export type AsrQuality = 'fastest' | 'fast' | 'accurate' | 'best';
 
 export type SubScores = { hook: number; flow: number; value: number; shareability: number };
 

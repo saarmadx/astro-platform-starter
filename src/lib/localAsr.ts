@@ -28,6 +28,8 @@ export const LANGUAGES: { id: string; label: string }[] = [
 ];
 
 export function modelFor(language: string, quality: AsrQuality): string {
+    // "best": Whisper large-v3-turbo, the most accurate model that runs in a browser (needs a graphics card)
+    if (quality === 'best') return 'onnx-community/whisper-large-v3-turbo';
     const size = quality === 'accurate' ? 'small' : quality === 'fastest' ? 'tiny' : 'base';
     return language === 'english' ? `Xenova/whisper-${size}.en` : `Xenova/whisper-${size}`;
 }
@@ -84,8 +86,18 @@ export function transcribeChunk(
                 const text = c.text.trim();
                 if (!text) continue;
                 const start = c.timestamp[0] + offset;
-                const end = (c.timestamp[1] ?? c.timestamp[0] + 0.3) + offset;
-                words.push({ text, start, end: Math.max(end, start + 0.05) });
+                const end = Math.max((c.timestamp[1] ?? c.timestamp[0] + 0.3) + offset, start + 0.05);
+                if (m.level === 'segment') {
+                    // phrase timings only: spread the words across the phrase by length
+                    const parts = text.split(/\s+/);
+                    const totalLen = parts.reduce((a, w) => a + w.length + 1, 0);
+                    let t = start;
+                    for (const w of parts) {
+                        const d = ((end - start) * (w.length + 1)) / totalLen;
+                        words.push({ text: w, start: t, end: t + d });
+                        t += d;
+                    }
+                } else words.push({ text, start, end });
             }
             resolve(words);
         };
@@ -97,7 +109,7 @@ export function transcribeChunk(
         };
         w.addEventListener('message', onMsg);
         w.addEventListener('error', onErr);
-        w.postMessage({ id, audio, model: modelFor(language, quality), language }, [audio.buffer]);
+        w.postMessage({ id, audio, model: modelFor(language, quality), language, precise: quality === 'accurate' || quality === 'best' }, [audio.buffer]);
     });
 }
 

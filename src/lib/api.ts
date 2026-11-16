@@ -67,7 +67,8 @@ async function transcribeLocally(
     onChunkDone?: (state: LocalResume) => void
 ): Promise<Transcript> {
     const STEP = 120;
-    const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r * 0.15), STEP);
+    const PAD = 3; // each piece overlaps its neighbours by 3s so no word is cut in half at a boundary
+    const chunks = await extractAudioChunks(file, duration, (r) => onStatus('Extracting audio', r * 0.15), STEP, PAD);
     const first = resume && resume.nextChunk < chunks.length ? resume.nextChunk : 0;
     const result: Transcript = {
         language,
@@ -77,11 +78,14 @@ async function transcribeLocally(
     };
     const started = Date.now();
     for (let i = first; i < chunks.length; i++) {
+        const own = { from: i * STEP, to: (i + 1) * STEP }; // the stretch this piece is responsible for
         try {
             const db = await loudness(chunks[i].blob);
-            const expected = Math.round((chunks[i].offset - result.energy!.db.length * ENERGY_STEP) / ENERGY_STEP);
+            const skip = Math.round((own.from - chunks[i].offset) / ENERGY_STEP); // overlap at the start
+            const keep = db.slice(skip, skip + Math.round(STEP / ENERGY_STEP));
+            const expected = Math.round(own.from / ENERGY_STEP) - result.energy!.db.length;
             for (let k = 0; k < expected; k++) result.energy!.db.push(-90);
-            result.energy!.db.push(...db);
+            result.energy!.db.push(...keep);
         } catch {
             result.energy = undefined;
         }
@@ -99,7 +103,11 @@ async function transcribeLocally(
         const words = await transcribeChunk(audio, chunks[i].offset, language, quality, (loaded, total) => {
             if (total > 0) onStatus(`Downloading the free speech model, first time only (${Math.round(loaded / 1048576)} of ${Math.round(total / 1048576)} MB)`, ratio);
         });
-        result.words.push(...words);
+        // keep words whose middle falls in this piece's own stretch (the overlap belongs to the neighbour)
+        result.words.push(...words.filter((w) => {
+            const mid = (w.start + w.end) / 2;
+            return mid >= own.from && (mid < own.to || i === chunks.length - 1);
+        }));
         onChunkDone?.({ words: result.words, db: result.energy ? result.energy.db : null, nextChunk: i + 1 });
     }
     result.words = cleanWords(result.words);

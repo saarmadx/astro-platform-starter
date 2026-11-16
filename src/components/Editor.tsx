@@ -8,6 +8,7 @@ import { outputSize } from '../lib/geometry';
 import { DEFAULT_SPEAKER_COLORS, TEMPLATES, TITLE_FONT } from '../lib/templates';
 import { mergeSpans, outputDuration, silenceCuts, skipCut, toOutputClamped } from '../lib/timeline';
 import { titleIdeas } from '../lib/titles';
+import { fixPrompt, parseFixes, replacePhrase } from '../lib/fixwords';
 import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, StyleSettings, Word } from '../lib/types';
 import { renderClip } from '../lib/video';
 import { Segmented } from './Home';
@@ -361,6 +362,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 <Toggle label="Highlight keywords" hint={clip.keywords.length ? clip.keywords.join(', ') : 'No keywords for this clip'} checked={style.keywordHighlight} onChange={(v) => setStyle({ keywordHighlight: v })} />
                                 <Toggle label="Auto emoji" hint={clip.emojis.length ? clip.emojis.map((e) => `${e.emoji} ${e.word}`).join('  ') : 'No emoji for this clip'} checked={style.emojis} onChange={(v) => setStyle({ emojis: v })} />
                                 <Toggle label="Animated emoji" hint="Emoji pop in and float" checked={!!style.emojiAnim} onChange={(v) => setStyle({ emojiAnim: v })} />
+                                <FixWords project={project} onChange={onChange} />
                                 <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
                                     <p className="text-sm font-semibold">Speaker colours</p>
                                     <p className="text-xs text-muted">Move the playhead to where someone starts talking, then pick who it is. Their captions take that colour until the next change.</p>
@@ -603,6 +605,76 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                     onClose={() => setSelection(null)}
                 />
             )}
+        </div>
+    );
+}
+
+/** Fix misheard words across the whole video: find & replace, or a list of fixes from a Claude chat. */
+function FixWords({ project, onChange }: { project: Project; onChange: (p: Project) => void }) {
+    const [find, setFind] = useState('');
+    const [replace, setReplace] = useState('');
+    const [msg, setMsg] = useState('');
+    const [open, setOpen] = useState(false);
+    const [hint, setHint] = useState('');
+    const [answer, setAnswer] = useState('');
+    const words = project.transcript?.words ?? [];
+
+    function apply(pairs: { wrong: string; right: string }[]) {
+        if (!project.transcript) return;
+        let ws = project.transcript.words;
+        let total = 0;
+        for (const p of pairs) {
+            const r = replacePhrase(ws, p.wrong, p.right);
+            ws = r.words;
+            total += r.count;
+        }
+        onChange({ ...project, transcript: { ...project.transcript, words: ws } });
+        setMsg(total ? `Fixed ${total} place${total > 1 ? 's' : ''}.` : 'Not found in the captions.');
+    }
+
+    return (
+        <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+            <p className="text-sm font-semibold">Fix caption words</p>
+            <p className="text-xs text-muted">Fix a misheard word or phrase everywhere in this video at once.</p>
+            <div className="flex flex-wrap gap-2">
+                <input className="input min-w-0 flex-1 !py-1.5 text-sm" placeholder="Wrong, e.g. label key" value={find} onChange={(e) => setFind(e.target.value)} aria-label="Find" />
+                <input className="input min-w-0 flex-1 !py-1.5 text-sm" placeholder="Right, e.g. Lambo key" value={replace} onChange={(e) => setReplace(e.target.value)} aria-label="Replace with" />
+                <button className="tl-btn" disabled={!find.trim()} onClick={() => apply([{ wrong: find, right: replace }])}>Replace everywhere</button>
+            </div>
+            <button className="self-start text-xs font-semibold text-accent" onClick={() => setOpen(!open)}>
+                {open ? '▾' : '▸'} Let Claude find misheard names and slang (free)
+            </button>
+            {open && (
+                <div className="flex flex-col gap-2 text-xs">
+                    <input className="input !py-1.5 text-sm" placeholder="Optional: who's in it, what game, special names…" value={hint} onChange={(e) => setHint(e.target.value)} />
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span>1.</span>
+                        <button
+                            className="tl-btn"
+                            onClick={() => navigator.clipboard.writeText(fixPrompt(words, hint)).then(() => setMsg('Prompt copied. Paste it into a new Claude chat.')).catch(() => setMsg('Copying failed.'))}
+                        >
+                            Copy prompt
+                        </button>
+                        <span className="text-muted">2. Paste it into a new chat at claude.ai and send. 3. Paste the answer below.</span>
+                    </div>
+                    <textarea className="input h-20 font-mono text-xs" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder='[{"wrong":"label key","right":"Lambo key"}]' aria-label="Claude's fixes" />
+                    <button
+                        className="tl-btn self-start"
+                        disabled={!answer.trim()}
+                        onClick={() => {
+                            try {
+                                apply(parseFixes(answer));
+                                setAnswer('');
+                            } catch (e) {
+                                setMsg((e as Error).message);
+                            }
+                        }}
+                    >
+                        Apply all fixes
+                    </button>
+                </div>
+            )}
+            {msg && <p className="text-xs text-accent">{msg}</p>}
         </div>
     );
 }
