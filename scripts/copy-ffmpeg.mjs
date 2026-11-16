@@ -1,4 +1,4 @@
-// Copies browser runtimes (ffmpeg.wasm core and MediaPipe face detection) into public/
+// Copies browser runtimes (ffmpeg.wasm cores and MediaPipe face detection) into public/
 // so the app loads them from its own domain.
 import { cpSync, mkdirSync } from 'node:fs';
 
@@ -8,4 +8,4 @@ for (const f of ['ffmpeg-core.js', 'ffmpeg-core.wasm']) cpSync(`node_modules/@ff
 mkdirSync('public/mediapipe', { recursive: true });
 cpSync('node_modules/@mediapipe/tasks-vision/wasm', 'public/mediapipe', { recursive: true });
 
-console.log('Copied ffmpeg core and MediaPipe wasm into public/');
+console.log('Copied the ffmpeg core and MediaPipe wasm into public/');
