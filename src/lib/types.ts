@@ -2,7 +2,7 @@ export type Word = { text: string; start: number; end: number };
 export type Segment = { start: number; end: number; text: string };
 export type Energy = { step: number; db: number[] };
 export type Transcript = { language: string; words: Word[]; segments: Segment[]; energy?: Energy };
-export type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud'; strength: number };
+export type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud' | 'chat'; strength: number; label?: string };
 
 export type ContentMode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-takes';
 /** where captions come from: free on this PC, or OpenAI (paid) */
@@ -45,6 +45,33 @@ export type Clip = {
     freeze?: { seconds: number; text: string };
     /** alternative titles to pick from */
     altTitles?: string[];
+    /** sound effects (absolute source times) */
+    sfx?: { t: number; kind: SfxKind }[];
+    /** screen shakes / flashes (absolute source times) */
+    shakes?: { t: number; kind: 'shake' | 'flash' | 'both' }[];
+    /** replay a moment slowed down after the clip */
+    replay?: { start: number; end: number; speed: number };
+    /** text stickers placed on the video */
+    stickers?: Sticker[];
+    /** translated captions, one line per caption block (absolute source times) */
+    translation?: { language: string; lines: { start: number; end: number; text: string }[] };
+};
+
+export type SfxKind = 'boom' | 'whoosh' | 'ding' | 'pop' | 'scratch';
+
+export type Sticker = {
+    id: string;
+    text: string;
+    start: number;
+    end: number;
+    /** centre position, fractions of the frame */
+    x: number;
+    y: number;
+    /** text height as a fraction of the frame width */
+    size: number;
+    color: string;
+    /** white box behind the text */
+    box: boolean;
 };
 
 export type Span = { start: number; end: number };
@@ -80,6 +107,9 @@ export type StyleSettings = {
     /** emoji pop and float instead of sitting still */
     emojiAnim?: boolean;
     speakerColors?: string[];
+    sfxVolume?: number;
+    /** which captions to show when a clip has a translation */
+    captionLang?: 'original' | 'translated' | 'both';
 };
 
 export type Project = {
@@ -109,6 +139,10 @@ export type Project = {
     thumb?: string;
     /** who is speaking from each time on (speaker index into style.speakerColors) */
     speakers?: { t: number; speaker: number }[];
+    /** background music chosen by the creator (their own file) */
+    music?: { name: string; blob: Blob; volume: number; duck: boolean };
+    /** stream chat replay: moments where chat exploded */
+    chat?: { name: string; spikes: { t: number; count: number; laughs: number }[] };
     /** captions finished so far, so a stopped run can continue where it left off */
     partial?: { key: string; words: Word[]; db: number[] | null; nextChunk: number };
 };

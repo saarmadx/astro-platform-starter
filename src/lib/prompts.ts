@@ -17,7 +17,7 @@ Strong comedy signals:
 - Absurd or wildly exaggerated stories, ridiculous hypotheticals, bad ideas defended with total confidence.
 - Awkward moments: misunderstandings, a joke that bombs, an uncomfortable silence that becomes funny.
 - Self-deprecating jokes and people losing it and failing to keep a straight face.
-- Audio markers in the transcript: ((REACTION ...)) means a burst of sound with almost no words, usually laughter. A reaction right after a line is the strongest evidence that the line was funny. ((LOUD ...)) means excited or raised voices.
+- Audio markers in the transcript: ((REACTION ...)) means a burst of sound with almost no words, usually laughter. A reaction right after a line is the strongest evidence that the line was funny. ((LOUD ...)) means excited or raised voices. ((CHAT SPIKE ...)) means the live stream chat exploded with laughter around that moment (already shifted for chat delay): very strong evidence.
 
 Weak or bad picks, avoid them:
 - Inside jokes or callbacks that need earlier parts of the video to make sense.
@@ -49,7 +49,12 @@ export function annotate(segments: Segment[], events: AudioEvent[], from = 0, to
     for (const e of events) {
         if (e.end <= from || e.start >= to) continue;
         const len = (e.end - e.start).toFixed(1);
-        const label = e.type === 'reaction' ? `((REACTION: laughter or loud reaction, ${len}s))` : `((LOUD: raised voices, ${len}s))`;
+        const label =
+            e.type === 'chat'
+                ? `((CHAT SPIKE: stream chat exploded here, ${e.label ?? ''}))`
+                : e.type === 'reaction'
+                  ? `((REACTION: laughter or loud reaction, ${len}s))`
+                  : `((LOUD: raised voices, ${len}s))`;
         lines.push({ t: e.start + 0.001, text: `[${e.start.toFixed(1)}] ${label}` });
     }
     return lines.sort((a, b) => a.t - b.t).map((l) => l.text).join('\n');

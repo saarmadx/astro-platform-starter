@@ -151,7 +151,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     // hook title and freeze text are drawn as image overlays (so emoji work), see renderClip
 
-    if (t.id !== 'none') {
+    const lang = clip.translation ? style.captionLang ?? 'original' : 'original';
+    if (t.id !== 'none' && lang !== 'original' && clip.translation) {
+        const segs = keptSegments(clip);
+        const below = lang === 'both';
+        const fs = Math.round(size * (below ? 0.62 : 1));
+        const ty = below ? y + Math.round(size * 1.25) : y;
+        for (const l of clip.translation.lines) {
+            const a = toOutputClamped(clip, l.start, segs);
+            const b = toOutputClamped(clip, l.end, segs);
+            if (b - a < 0.05) continue;
+            const text = clean(t.uppercase ? l.text.toUpperCase() : l.text);
+            const col = below ? `\\c${assColor(style.highlight)}` : '';
+            lines.push(`Dialogue: 2,${assTime(a)},${assTime(b)},Cap,,0,0,0,,{\\an${below ? 8 : 5}\\pos(${Math.round(W / 2)},${ty})\\fs${fs}${col}\\bord${Math.max(2, Math.round(fs * 0.12))}}${text}`);
+        }
+    }
+
+    if (t.id !== 'none' && lang !== 'translated') {
         const hl = assColor(style.highlight);
         const dw = displayWords(words, clip, style, speakers, true);
         const groups = groupWords(dw, style.wordsPerLine);

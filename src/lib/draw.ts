@@ -5,7 +5,7 @@ import { captionSize, captionY, displayText, emojiEvents, groupTimes, type DWord
 import { aspectRatio, cropPath, cropWindow, posAt } from './geometry';
 import { getTemplate, TITLE_FONT } from './templates';
 import { outputDuration, toOutputClamped } from './timeline';
-import type { Brand, Clip, StyleSettings } from './types';
+import type { Brand, Clip, Sticker, StyleSettings } from './types';
 
 export type Scene = {
     clip: Clip;
@@ -15,7 +15,98 @@ export type Scene = {
     logo: HTMLImageElement | null;
     /** set while the preview holds the last frame for the freeze ending (0..1 progress) */
     freezing?: number | null;
+    /** set while the preview plays the instant replay */
+    replaying?: boolean;
 };
+
+/** A text sticker (also used to make the overlay image for export). */
+export function drawSticker(ctx: CanvasRenderingContext2D, st: Sticker, selected = false) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    const size = st.size * W;
+    ctx.save();
+    ctx.font = `${size}px ${TITLE_FONT.css}, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    const lines = st.text.split('\n');
+    const widths = lines.map((l) => ctx.measureText(l).width);
+    const bw = Math.max(...widths) + size * 0.6;
+    const bh = lines.length * size * 1.15 + size * 0.3;
+    const cx = st.x * W;
+    const cy = st.y * H;
+    if (st.box) {
+        ctx.fillStyle = '#ffffff';
+        roundRect(ctx, cx - bw / 2, cy - bh / 2, bw, bh, size * 0.2);
+        ctx.fill();
+    }
+    lines.forEach((l, i) => {
+        const y = cy + (i - (lines.length - 1) / 2) * size * 1.15;
+        if (!st.box) {
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = size * 0.22;
+            ctx.strokeText(l, cx, y);
+        }
+        ctx.fillStyle = st.box ? '#000000' : st.color;
+        ctx.fillText(l, cx, y);
+    });
+    if (selected) {
+        ctx.strokeStyle = '#c8ff3d';
+        ctx.lineWidth = Math.max(2, W * 0.004);
+        ctx.setLineDash([8, 6]);
+        ctx.strokeRect(cx - bw / 2 - 4, cy - bh / 2 - 4, bw + 8, bh + 8);
+    }
+    ctx.restore();
+}
+
+/** Sticker bounds in canvas pixels (for clicking and dragging in the preview). */
+export function stickerBox(ctx: CanvasRenderingContext2D, st: Sticker) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    const size = st.size * W;
+    ctx.save();
+    ctx.font = `${size}px ${TITLE_FONT.css}, sans-serif`;
+    const lines = st.text.split('\n');
+    const bw = Math.max(...lines.map((l) => ctx.measureText(l).width)) + size * 0.6;
+    ctx.restore();
+    const bh = lines.length * size * 1.15 + size * 0.3;
+    return { x: st.x * W - bw / 2, y: st.y * H - bh / 2, w: bw, h: bh };
+}
+
+/** "REPLAY" badge shown during the instant replay. */
+export function drawReplayBadge(ctx: CanvasRenderingContext2D) {
+    const W = ctx.canvas.width;
+    const size = W * 0.05;
+    ctx.save();
+    ctx.font = `${size}px ${TITLE_FONT.css}, sans-serif`;
+    ctx.textBaseline = 'middle';
+    const label = '⏪ REPLAY';
+    const w = ctx.measureText(label).width + size * 0.8;
+    ctx.fillStyle = '#ff2d55';
+    roundRect(ctx, W * 0.05, W * 0.05, w, size * 1.5, size * 0.3);
+    ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.fillText(label, W * 0.05 + size * 0.4, W * 0.05 + size * 0.75);
+    ctx.restore();
+}
+
+/** Screen-shake offset (pixels) and flash strength (0..1) at source time t. */
+export function shakeAt(clip: Clip, t: number, W: number): { dx: number; dy: number; flash: number } {
+    let dx = 0;
+    let dy = 0;
+    let flash = 0;
+    for (const s of clip.shakes ?? []) {
+        const age = t - s.t;
+        if (age < 0 || age > 0.45) continue;
+        if (s.kind !== 'flash') {
+            const amp = W * 0.025 * (1 - age / 0.45);
+            dx += amp * Math.sin(age * 90);
+            dy += amp * Math.cos(age * 77);
+        }
+        if (s.kind !== 'shake' && age < 0.12) flash = Math.max(flash, 0.6 * (1 - age / 0.12));
+    }
+    return { dx, dy, flash };
+}
 
 export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
     ctx.beginPath();
@@ -98,11 +189,35 @@ export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoEl
 export function drawScene(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, s: Scene) {
     const W = ctx.canvas.width;
     const H = ctx.canvas.height;
-    drawVideoLayer(ctx, video, t, s.clip, s.style);
+    const shake = s.replaying || s.freezing != null ? { dx: 0, dy: 0, flash: 0 } : shakeAt(s.clip, t, W);
+    if (s.replaying) {
+        // replay: slowed down (by the player) and zoomed in
+        ctx.save();
+        ctx.translate(W / 2, H / 2);
+        ctx.scale(1.18, 1.18);
+        ctx.translate(-W / 2, -H / 2);
+        drawVideoLayer(ctx, video, t, { ...s.clip, zooms: [] }, s.style);
+        ctx.restore();
+    } else if (shake.dx || shake.dy) {
+        ctx.save();
+        ctx.translate(W / 2 + shake.dx, H / 2 + shake.dy);
+        ctx.scale(1.1, 1.1);
+        ctx.translate(-W / 2, -H / 2);
+        drawVideoLayer(ctx, video, t, s.clip, s.style);
+        ctx.restore();
+    } else drawVideoLayer(ctx, video, t, s.clip, s.style);
+    if (shake.flash) {
+        ctx.fillStyle = `rgba(255,255,255,${shake.flash})`;
+        ctx.fillRect(0, 0, W, H);
+    }
     const outT = s.freezing != null ? outputDuration(s.clip) : toOutputClamped(s.clip, t);
 
-    if (s.freezing == null) drawCaptions(ctx, t, s);
-    drawHookTitle(ctx, outT, s);
+    if (s.freezing == null && !s.replaying) {
+        drawCaptions(ctx, t, s);
+        for (const st of s.clip.stickers ?? []) if (t >= st.start && t < st.end) drawSticker(ctx, st);
+    }
+    if (s.replaying) drawReplayBadge(ctx);
+    if (!s.replaying) drawHookTitle(ctx, outT, s);
 
     if (s.logo && s.logo.complete && s.logo.naturalWidth) {
         const lw = W * s.brand.logoSize;
@@ -191,9 +306,38 @@ export function drawHookTitleText(ctx: CanvasRenderingContext2D, text: string, s
     ctx.restore();
 }
 
+function drawTranslation(ctx: CanvasRenderingContext2D, t: number, s: Scene, below: boolean) {
+    const line = s.clip.translation?.lines.find((l) => t >= l.start && t < l.end);
+    if (!line) return;
+    const tpl = getTemplate(s.style.template);
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    const size = captionSize(tpl, s.style, W) * (below ? 0.62 : 1);
+    ctx.save();
+    ctx.font = `${size}px ${tpl.cssFont}, 'Arial Black', sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    const text = tpl.uppercase ? line.text.toUpperCase() : line.text;
+    const lines = wrap(ctx, text, W * 0.84);
+    const y0 = captionY(s.style) * H + (below ? captionSize(tpl, s.style, W) * 1.25 : 0);
+    lines.forEach((l, i) => {
+        const y = y0 + (i - (below ? 0 : (lines.length - 1) / 2)) * size * 1.2;
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = Math.max(4, size * 0.22);
+        ctx.strokeText(l, W / 2, y);
+        ctx.fillStyle = below ? s.style.highlight : tpl.color;
+        ctx.fillText(l, W / 2, y);
+    });
+    ctx.restore();
+}
+
 function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
     const tpl = getTemplate(s.style.template);
     if (tpl.id === 'none') return;
+    const lang = s.clip.translation ? s.style.captionLang ?? 'original' : 'original';
+    if (lang === 'translated') return drawTranslation(ctx, t, s, false);
+    if (lang === 'both') drawTranslation(ctx, t, s, true);
     const W = ctx.canvas.width;
     const H = ctx.canvas.height;
     const times = groupTimes(s.groups);

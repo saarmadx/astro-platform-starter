@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { findClips, transcribeVideo } from '../lib/api';
-import { findAudioEvents } from '../lib/audio';
+import { projectEvents } from '../lib/audio';
 import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
+import { chatSpikes, parseChat } from '../lib/chat';
 import { analyseClip } from '../lib/faces';
 import { cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
@@ -122,7 +123,7 @@ export default function Studio() {
             let clips: Clip[];
             if (picker === 'laughs') {
                 setStep(p.id, 'Finding the biggest laughs', 0.55);
-                clips = pickByLaughs(p.transcript!, findAudioEvents(p.transcript!.energy, p.transcript!.words), o, p.duration);
+                clips = pickByLaughs(p.transcript!, projectEvents(p), o, p.duration);
                 if (clips.length === 0) throw new Error('No laughs or loud reactions were found. Try "With Claude chat" to pick clips from what is said.');
             } else {
                 setStep(p.id, 'AI is finding the best moments', 0.55);
@@ -199,7 +200,8 @@ export default function Studio() {
             status: 'transcribing',
             clips: [],
             style: { ...DEFAULT_STYLE, aspect: input.aspect, template: input.template, highlight: input.highlight },
-            options: input.options
+            options: input.options,
+            chat: input.chatFile ? { name: input.chatFile.name, spikes: chatSpikes(parseChat(await input.chatFile.text())) } : undefined
         };
         setVideos((v) => ({ ...v, [project.id]: { file: input.file, url } }));
         update(project);
@@ -272,7 +274,7 @@ export default function Studio() {
 
                 <main className="mx-auto w-full max-w-7xl grow px-4 py-6 sm:px-8">
                     {view.name === 'home' && (
-                        <Home projects={projects} running={progress} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} accessCode={accessCode} setAccessCode={setAccessCode} />
+                        <Home projects={projects} running={progress} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} onRestore={(ps) => ps.forEach((p) => update({ ...p, status: p.status === 'transcribing' || p.status === 'clipping' ? 'error' : p.status }))} accessCode={accessCode} setAccessCode={setAccessCode} />
                     )}
                     {view.name === 'brand' && <BrandKit brand={brand} setBrand={setBrand} />}
                     {view.name === 'project' && current && (

@@ -45,23 +45,32 @@ Keep the black window open while you use the app. Close it to stop.
    Click a caption block in the timeline to fix its words.
 6. Editor tabs:
      Captions  - 18 caption styles, colours, censor swear words (with bleep),
-                 animated emoji, speaker colours
+                 animated emoji, speaker colours, FIX CAPTION WORDS (replace a
+                 misheard word everywhere, or let Claude find them), TRANSLATE
      Layout    - Facecam + gameplay split (for streams), follow speaker, fit + blur
-     Effects   - hook title at the top, zooms (or auto-zoom on laughs),
-                 remove silences, freeze-frame ending, progress bar
-     Post      - title ideas, description, hashtags
+     Effects   - every effect has its own on/off switch (all off at first):
+                 hook title, zooms (or auto-zoom on laughs), remove silences,
+                 freeze-frame ending, progress bar, SOUND EFFECTS, INSTANT REPLAY,
+                 SCREEN SHAKE & FLASH, TEXT STICKERS, BACKGROUND MUSIC,
+                 plus "Use this clip's effects on all clips" and saved PRESETS
+     Post      - IMPROVE THIS CLIP WITH CLAUDE, title ideas, description, hashtags
      Thumbnail - make a thumbnail / Short cover with big text
      Export    - MP4 (720p or 1080p) and captions file
 7. On the clip grid: "Watch all" plays every clip back to back; "Export all"
-   downloads every clip plus a text file with all titles and descriptions.
+   downloads every clip plus a text file with all titles and descriptions;
+   "Compilation" joins your best clips into one "Top 5" video; "Add chat" adds
+   your stream's chat replay so the moments where chat exploded are found.
+   Home screen: "Back up projects" saves all your projects to a file.
 8. Optional: Brand kit (left menu) to add your logo to every clip.
 
 
 TIPS
 ----
 - Use Chrome or Edge.
-- "Caption settings" on the home screen: "More accurate (slower)" gives better
-  captions for hard-to-hear videos.
+- "Caption settings" on the home screen: "Best" (shown when your graphics card
+  can be used) gives the most accurate captions; it downloads about 1 GB once.
+  Without a usable graphics card, "Accurate" is the most accurate choice.
+- Exports now use several processor cores at once, so they are much faster.
 - Projects are saved in your browser. To keep editing one later, open it and
   select the same video file again when asked.
 - Optional paid speed-ups (not needed): double-click add-paid-keys.bat to add

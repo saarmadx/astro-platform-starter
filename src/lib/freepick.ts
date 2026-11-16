@@ -16,13 +16,15 @@ export function pickByLaughs(
 ): Clip[] {
     const segs = t.segments;
     if (!segs.length) return [];
-    const reactions = events.filter((e) => e.type === 'reaction').sort((a, b) => b.strength - a.strength);
+    // chat spikes first (strongest signal), then laughs heard in the audio
+    const reactions = [...events.filter((e) => e.type === 'chat').sort((a, b) => b.strength - a.strength), ...events.filter((e) => e.type === 'reaction').sort((a, b) => b.strength - a.strength)];
     const louds = events.filter((e) => e.type === 'loud').sort((a, b) => b.strength - a.strength);
     const maxStrength = Math.max(...events.map((e) => e.strength), -60);
     const minStrength = Math.min(...events.map((e) => e.strength), -60);
     const chosen: Clip[] = [];
 
     const build = (e: AudioEvent, kind: 'reaction' | 'loud'): Clip | null => {
+        const isChat = e.type === 'chat';
         const end = Math.min(duration, e.end + 0.5);
         // latest sentence start that still gives at least the minimum length
         let startIdx = -1;
@@ -54,7 +56,7 @@ export function pickByLaughs(
             .slice(0, 4);
         const strength = maxStrength > minStrength ? (e.strength - minStrength) / (maxStrength - minStrength) : 0.5;
         const laughLen = Math.min(4, e.end - e.start);
-        const base = kind === 'reaction' ? 62 : 50;
+        const base = isChat ? 70 : kind === 'reaction' ? 62 : 50;
         const score = Math.round(Math.min(96, base + strength * 22 + laughLen * 3));
         const shortTitle = punch.length > 62 ? `${punch.slice(0, 60).trim()}…` : punch;
         return {
@@ -66,7 +68,7 @@ export function pickByLaughs(
             hook: hook.length > 90 ? `${hook.slice(0, 88)}…` : hook,
             score,
             subscores: { hook: Math.max(40, score - 8), flow: Math.max(40, score - 4), value: score, shareability: Math.max(40, score - 6) },
-            reason: kind === 'reaction' ? `A ${laughLen.toFixed(1)}s burst of laughter or reaction comes right after this line.` : 'Voices get loud and excited here.',
+            reason: isChat ? `Stream chat exploded here (${e.label}).` : kind === 'reaction' ? `A ${laughLen.toFixed(1)}s burst of laughter or reaction comes right after this line.` : 'Voices get loud and excited here.',
             description: shortTitle,
             hashtags: kind === 'reaction' ? ['funny', 'shorts', 'comedy'] : ['shorts'],
             keywords,

@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { groupTimes, type DWord } from '../lib/captions';
+import { replayLength } from '../lib/fx';
+import { SFX_KINDS } from '../lib/sfx';
 import { mergeSpans, pieces, subtractSpan } from '../lib/timeline';
 import type { AudioEvent, Clip, Energy, Span } from '../lib/types';
 import { fmt } from './ui';
 
-export type Selection = { type: 'piece'; i: number } | { type: 'cut'; i: number } | { type: 'zoom'; i: number } | { type: 'caption'; i: number } | null;
+export type Selection =
+    | { type: 'piece' | 'cut' | 'zoom' | 'caption' | 'sfx' | 'shake' | 'sticker'; i: number }
+    | null;
 
 type Props = {
     clip: Clip;
@@ -23,12 +27,14 @@ type Props = {
     onChange: (patch: Partial<Clip>) => void;
     onUndo: () => void;
     canUndo: boolean;
+    onRedo: () => void;
+    canRedo: boolean;
     onRemoveSilences: () => void;
     outputTime: number;
     outputLength: number;
 };
 
-const TRACK_H = { ruler: 22, video: 56, captions: 34, effects: 30, audio: 34 };
+const TRACK_H = { ruler: 22, video: 56, captions: 34, text: 26, effects: 30, audio: 34 };
 const LABEL_W = 72;
 
 export default function Timeline(p: Props) {
@@ -40,7 +46,8 @@ export default function Timeline(p: Props) {
 
     // visible window: the clip plus some context either side
     const winStart = Math.max(0, clip.start - 10);
-    const winEnd = Math.min(p.duration, clip.end + 10 + (clip.freeze?.seconds ?? 0));
+    const tail = replayLength(clip) + (clip.freeze?.seconds ?? 0); // replay and freeze play after the clip
+    const winEnd = Math.max(Math.min(p.duration, clip.end + 10), clip.end + tail + 1);
     const span = Math.max(1, winEnd - winStart);
 
     useEffect(() => {
@@ -85,6 +92,9 @@ export default function Timeline(p: Props) {
             p.onChange({ cuts: pc.cut ? subtractSpan(cuts, pc) : mergeSpans([...cuts, { start: pc.start, end: pc.end }]) });
         } else if (s.type === 'cut') p.onChange({ cuts: cuts.filter((_, i) => i !== s.i) });
         else if (s.type === 'zoom') p.onChange({ zooms: zooms.filter((_, i) => i !== s.i) });
+        else if (s.type === 'sfx') p.onChange({ sfx: (clip.sfx ?? []).filter((_, i) => i !== s.i) });
+        else if (s.type === 'shake') p.onChange({ shakes: (clip.shakes ?? []).filter((_, i) => i !== s.i) });
+        else if (s.type === 'sticker') p.onChange({ stickers: (clip.stickers ?? []).filter((_, i) => i !== s.i) });
         p.setSelection(null);
     }
     function addZoom() {
@@ -147,6 +157,27 @@ export default function Timeline(p: Props) {
             const next = [...(o.zooms ?? [])];
             next[d.index] = { ...z, start: snap(start), end: snap(end) };
             p.onChange({ zooms: next });
+        } else if (d.kind.startsWith('sticker') && d.index !== undefined) {
+            const st = (o.stickers ?? [])[d.index];
+            if (!st) return;
+            let { start, end } = st;
+            if (d.kind === 'sticker-move') {
+                const len = end - start;
+                start = Math.max(o.start, Math.min(o.end - len, start + dt));
+                end = start + len;
+            } else if (d.kind === 'sticker-l') start = Math.max(o.start, Math.min(end - 0.2, start + dt));
+            else end = Math.min(o.end, Math.max(start + 0.2, end + dt));
+            const next = [...(o.stickers ?? [])];
+            next[d.index] = { ...st, start: snap(start), end: snap(end) };
+            p.onChange({ stickers: next });
+        } else if (d.kind === 'sfx-move' && d.index !== undefined) {
+            const next = [...(o.sfx ?? [])];
+            next[d.index] = { ...next[d.index], t: snap(Math.max(o.start, Math.min(o.end, next[d.index].t + dt))) };
+            p.onChange({ sfx: next });
+        } else if (d.kind === 'shake-move' && d.index !== undefined) {
+            const next = [...(o.shakes ?? [])];
+            next[d.index] = { ...next[d.index], t: snap(Math.max(o.start, Math.min(o.end, next[d.index].t + dt))) };
+            p.onChange({ shakes: next });
         } else if (d.kind === 'title' && o.hookTitle) p.onChange({ hookTitle: { ...o.hookTitle, seconds: Math.max(0.5, Math.min(15, snap(o.hookTitle.seconds + dt))) } });
         else if (d.kind === 'freeze' && o.freeze) p.onChange({ freeze: { ...o.freeze, seconds: Math.max(0.5, Math.min(6, snap(o.freeze.seconds + dt))) } });
         else if (d.kind === 'scrub') {
@@ -202,6 +233,7 @@ export default function Timeline(p: Props) {
                 <button className="tl-btn" onClick={addZoom} title="Add a punch-in zoom at the playhead (Z)">🔍 Zoom</button>
                 <button className="tl-btn" onClick={p.onRemoveSilences} title="Cut out pauses between words">⏩ Remove silences</button>
                 <button className="tl-btn" onClick={p.onUndo} disabled={!p.canUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
+                <button className="tl-btn" onClick={p.onRedo} disabled={!p.canRedo} title="Redo (Ctrl+Y)">↷ Redo</button>
                 <span className="ml-auto flex items-center gap-2 text-xs text-muted">
                     Zoom
                     <input type="range" min={1} max={12} step={0.5} value={zoom} onChange={(e) => setZoom(+e.target.value)} className="w-24 accent-[var(--color-accent)]" aria-label="Timeline zoom" />
@@ -216,6 +248,7 @@ export default function Timeline(p: Props) {
                         <div style={{ height: TRACK_H.ruler }} />
                         <div className="flex items-center px-2" style={{ height: TRACK_H.video }}>Video</div>
                         <div className="flex items-center px-2" style={{ height: TRACK_H.captions }}>Captions</div>
+                        <div className="flex items-center px-2" style={{ height: TRACK_H.text }}>Text</div>
                         <div className="flex items-center px-2" style={{ height: TRACK_H.effects }}>Effects</div>
                         <div className="flex items-center px-2" style={{ height: TRACK_H.audio }}>Audio</div>
                     </div>
@@ -293,19 +326,45 @@ export default function Timeline(p: Props) {
                             ))}
                         </div>
 
+                        {/* text track: hook title and stickers */}
+                        <div className="relative border-t border-white/5" style={{ height: TRACK_H.text }} onClick={seekFromEvent}>
+                            {clip.hookTitle && clip.hookTitle.seconds > 0 && clip.hookTitle.text.trim() && (
+                                <div className="absolute inset-y-0.5 truncate rounded bg-white/85 pl-1 text-[10px] leading-5 font-bold text-ink" style={{ left: X(clip.start), width: clip.hookTitle.seconds * pps }} title="Hook title. Drag the right edge to change how long it shows.">
+                                    T {clip.hookTitle.text}
+                                    <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-ink/30" onPointerDown={(e) => startDrag(e, 'title')} />
+                                </div>
+                            )}
+                            {(clip.stickers ?? []).map((st, i) => (
+                                <div
+                                    key={st.id}
+                                    onPointerDown={(e) => {
+                                        p.setSelection({ type: 'sticker', i });
+                                        startDrag(e, 'sticker-move', i);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className={`absolute inset-y-0.5 cursor-grab truncate rounded bg-amber-400/80 px-2 text-[10px] leading-5 font-bold text-ink ${sel?.type === 'sticker' && sel.i === i ? 'ring-2 ring-white' : ''}`}
+                                    style={{ left: X(st.start), width: Math.max(10, (st.end - st.start) * pps) }}
+                                    title="Text sticker. Drag to move, drag the edges to resize."
+                                >
+                                    ✎ {st.text}
+                                    <span className="absolute inset-y-0 left-0 w-2 cursor-ew-resize" onPointerDown={(e) => { p.setSelection({ type: 'sticker', i }); startDrag(e, 'sticker-l', i); }} />
+                                    <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize" onPointerDown={(e) => { p.setSelection({ type: 'sticker', i }); startDrag(e, 'sticker-r', i); }} />
+                                </div>
+                            ))}
+                        </div>
+
                         {/* effects track */}
                         <div className="relative border-t border-white/5" style={{ height: TRACK_H.effects }} onClick={seekFromEvent}>
                             {p.events
-                                .filter((e) => e.type === 'reaction' && e.start >= winStart && e.start <= winEnd)
+                                .filter((e) => (e.type === 'reaction' || e.type === 'chat') && e.start >= winStart && e.start <= winEnd)
                                 .map((e, i) => (
-                                    <span key={`l${i}`} className="pointer-events-none absolute top-1 text-xs" style={{ left: X(e.start) - 6 }} title="Laugh or reaction">
-                                        😂
+                                    <span key={`l${i}`} className="pointer-events-none absolute top-1 text-xs opacity-80" style={{ left: X(e.start) - 6 }} title={e.type === 'chat' ? `Chat spike: ${e.label}` : 'Laugh or reaction'}>
+                                        {e.type === 'chat' ? '💬' : '😂'}
                                     </span>
                                 ))}
-                            {clip.hookTitle && clip.hookTitle.seconds > 0 && clip.hookTitle.text.trim() && (
-                                <div className="absolute inset-y-1 truncate rounded bg-white/85 pl-1 text-[10px] leading-5 font-bold text-ink" style={{ left: X(clip.start), width: clip.hookTitle.seconds * pps }} title="Hook title. Drag the right edge to change how long it shows.">
-                                    T {clip.hookTitle.text}
-                                    <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-ink/30" onPointerDown={(e) => startDrag(e, 'title')} />
+                            {clip.replay && replayLength(clip) > 0 && (
+                                <div className="absolute inset-y-1 truncate rounded bg-rose-500/70 pl-1 text-[10px] leading-5 font-bold" style={{ left: X(clip.end), width: replayLength(clip) * pps }} title="Instant replay (plays after the clip)">
+                                    ⏪ Replay
                                 </div>
                             )}
                             {zooms.map((z, i) => (
@@ -326,17 +385,47 @@ export default function Timeline(p: Props) {
                                 </div>
                             ))}
                             {clip.freeze && clip.freeze.seconds > 0 && (
-                                <div className="absolute inset-y-1 truncate rounded bg-cyan-400/60 pl-1 text-[10px] leading-5 font-bold" style={{ left: X(clip.end), width: clip.freeze.seconds * pps }} title="Freeze ending. Drag the right edge to change its length.">
+                                <div className="absolute inset-y-1 truncate rounded bg-cyan-400/60 pl-1 text-[10px] leading-5 font-bold" style={{ left: X(clip.end + replayLength(clip)), width: clip.freeze.seconds * pps }} title="Freeze ending. Drag the right edge to change its length.">
                                     ❄ {clip.freeze.text || 'Freeze'}
                                     <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-ink/30" onPointerDown={(e) => startDrag(e, 'freeze')} />
                                 </div>
                             )}
+                            {(clip.shakes ?? []).map((sh, i) => (
+                                <button
+                                    key={`sh${i}`}
+                                    onPointerDown={(e) => {
+                                        p.setSelection({ type: 'shake', i });
+                                        startDrag(e, 'shake-move', i);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className={`absolute top-0.5 z-10 grid size-5 -translate-x-1/2 cursor-grab place-items-center rounded bg-yellow-300 text-[11px] text-ink ${sel?.type === 'shake' && sel.i === i ? 'ring-2 ring-white' : ''}`}
+                                    style={{ left: X(sh.t) }}
+                                    title={sh.kind === 'flash' ? 'Flash' : sh.kind === 'both' ? 'Shake + flash' : 'Shake'}
+                                >
+                                    {sh.kind === 'flash' ? '✦' : '⚡'}
+                                </button>
+                            ))}
                         </div>
 
                         {/* audio track */}
                         <div className="relative border-t border-white/5" style={{ height: TRACK_H.audio }} onClick={seekFromEvent}>
                             {bars.map((b, i) => (
                                 <div key={i} className={`absolute bottom-1 w-px ${b.t >= clip.start && b.t <= clip.end ? 'bg-emerald-300/70' : 'bg-white/15'}`} style={{ left: X(b.t), height: Math.max(1, b.v * (TRACK_H.audio - 6)) }} />
+                            ))}
+                            {(clip.sfx ?? []).map((sx, i) => (
+                                <button
+                                    key={`sx${i}`}
+                                    onPointerDown={(e) => {
+                                        p.setSelection({ type: 'sfx', i });
+                                        startDrag(e, 'sfx-move', i);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className={`absolute top-1 z-10 grid size-6 -translate-x-1/2 cursor-grab place-items-center rounded-full bg-sky-400 text-xs ${sel?.type === 'sfx' && sel.i === i ? 'ring-2 ring-white' : ''}`}
+                                    style={{ left: X(sx.t) }}
+                                    title={`Sound effect: ${SFX_KINDS.find((k) => k.id === sx.kind)?.label}. Drag to move.`}
+                                >
+                                    {SFX_KINDS.find((k) => k.id === sx.kind)?.icon}
+                                </button>
                             ))}
                             {p.bleeps.map((b, i) => (
                                 <div key={`b${i}`} className="absolute inset-y-1 rounded-sm bg-red-500/70" style={{ left: X(b.start), width: Math.max(3, (b.end - b.start) * pps) }} title="Bleep" />
@@ -346,7 +435,7 @@ export default function Timeline(p: Props) {
 
                         {/* dim outside the clip */}
                         <div className="pointer-events-none absolute top-[22px] bottom-0 left-0 bg-black/50" style={{ width: Math.max(0, X(clip.start)) }} />
-                        <div className="pointer-events-none absolute top-[22px] bottom-0 bg-black/50" style={{ left: X(clip.end + (clip.freeze?.seconds ?? 0)), right: 0 }} />
+                        <div className="pointer-events-none absolute top-[22px] bottom-0 bg-black/50" style={{ left: X(clip.end + tail), right: 0 }} />
 
                         {/* playhead */}
                         <div className="pointer-events-none absolute top-0 bottom-0 z-30 w-0.5 bg-white" style={{ left: X(p.time) }}>
@@ -356,7 +445,7 @@ export default function Timeline(p: Props) {
                 </div>
             </div>
             <p className="border-t border-white/10 px-3 py-1.5 text-[11px] text-muted">
-                Space play/pause · S split · Delete remove or restore the selected part · Z add zoom · ←/→ step · Ctrl+Z undo · drag the green handles to trim
+                Space play/pause · S split · Delete remove the selected item (or restore a cut part) · Z add zoom · ←/→ step · Ctrl+Z undo · Ctrl+Y redo · drag the green handles to trim
             </p>
         </div>
     );

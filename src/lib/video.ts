@@ -2,11 +2,13 @@ import { FFmpeg, FFFSType } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { bleepSpans } from './censor';
 import { buildAss, captionSize, captionY, displayWords, emojiEvents, groupWords } from './captions';
-import { drawFreezeText, drawHookTitleText, emojiPng, textOverlayPng } from './draw';
+import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiPng, textOverlayPng } from './draw';
+import { replayLength } from './fx';
+import { sfxWav } from './sfx';
 import { cropPath, cropWindow, outputSize } from './geometry';
 import { FONT_FILES, getTemplate } from './templates';
 import { keptSegments, outputDuration, toOutput, toOutputClamped } from './timeline';
-import type { Brand, Clip, StyleSettings, Word } from './types';
+import type { Brand, Clip, Project, StyleSettings, Word } from './types';
 
 // All video work happens in the user's browser with ffmpeg.wasm, so videos never have to be
 // uploaded to a server. Only small audio chunks are sent off for transcription.
@@ -193,6 +195,7 @@ export type RenderOptions = {
     videoWidth: number;
     videoHeight: number;
     speakers?: { t: number; speaker: number }[];
+    music?: Project['music'];
     onProgress: (ratio: number) => void;
 };
 
@@ -206,6 +209,8 @@ async function prepareAssets(o: RenderOptions, W: number, H: number): Promise<As
     if (clip.hookTitle?.text.trim() && clip.hookTitle.seconds > 0) files.push({ path: '/title.png', data: await textOverlayPng(W, H, (ctx) => drawHookTitleText(ctx, clip.hookTitle!.text, style)) });
     if (clip.freeze && clip.freeze.seconds > 0 && clip.freeze.text.trim()) files.push({ path: '/freeze.png', data: await textOverlayPng(W, H, (ctx) => drawFreezeText(ctx, clip.freeze!.text, style)) });
     if (o.brand.logo) files.push({ path: '/logo.png', data: dataUrlBytes(o.brand.logo) });
+    if (replayLength(clip) > 0) files.push({ path: '/replay.png', data: await textOverlayPng(W, H, (ctx) => drawReplayBadge(ctx)) });
+    for (let i = 0; i < (clip.stickers ?? []).length; i++) files.push({ path: `/sticker_${i}.png`, data: await textOverlayPng(W, H, (ctx) => drawSticker(ctx, clip.stickers![i])) });
     if (style.emojis && tpl.id !== 'none') {
         const groups = groupWords(displayWords(o.words, clip, style, o.speakers, true), style.wordsPerLine);
         const events = emojiEvents(clip, groups).slice(0, 10);
@@ -218,22 +223,112 @@ async function prepareAssets(o: RenderOptions, W: number, H: number): Promise<As
     return { files, ass: buildAss(o.words, clip, style, W, H, o.speakers) };
 }
 
-/**
- * Video-only command for the piece of the finished clip between output times ws and we.
- * Every time value is shifted so the piece starts at 0.
- */
-function videoPartCommand(o: RenderOptions, input: string, ws: number, we: number, W: number, H: number, isLast: boolean, out: string): string[] {
-    const { clip, style } = o;
-    const tpl = getTemplate(style.template);
+type Timing = { total: number; replay: number; freeze: number; full: number };
+
+function timing(clip: Clip): Timing {
+    const total = outputDuration(clip);
+    const replay = replayLength(clip);
+    const freeze = clip.freeze && clip.freeze.seconds > 0 ? clip.freeze.seconds : 0;
+    return { total, replay, freeze, full: snap(total + replay + freeze) };
+}
+
+/** Framing filters (crop / follow speaker / fit / facecam split) with zooms and shakes. */
+function layout(
+    o: RenderOptions,
+    g: string[],
+    v: string,
+    W: number,
+    H: number,
+    zoomAt: (frameTime: string) => string | null,
+    shake: string | null,
+    cropPoints: { t: number; x: number }[]
+): string {
+    const { style } = o;
     const vw = o.videoWidth;
     const vh = o.videoHeight;
+    const zp = (w: number, h: number) => {
+        const z = zoomAt(`in/${FPS}`);
+        if (!z && !shake) return '';
+        const zexpr = z ?? '1';
+        const zz = shake ? `if(${shake},max(1.1,${zexpr}),${zexpr})` : zexpr;
+        const jx = shake ? `+if(${shake},iw*0.022*sin(in*2.7),0)` : '';
+        const jy = shake ? `+if(${shake},ih*0.022*cos(in*3.1),0)` : '';
+        return `,zoompan=z='${zz}':x='max(0,min(iw-iw/zoom,iw/2-(iw/zoom/2)${jx}))':y='max(0,min(ih-ih/zoom,ih/2-(ih/zoom/2)${jy}))':d=1:s=${w}x${h}:fps=${FPS}`;
+    };
+    if (style.layout === 'fit') {
+        g.push(`[${v}]split[fa][fb]`);
+        g.push(`[fa]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=luma_radius=28:luma_power=2,eq=brightness=-0.07[bg]`);
+        g.push(`[fb]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg]`);
+        g.push(`[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1${zp(W, H)}[v0]`);
+    } else if (style.layout === 'split') {
+        const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
+        const TH = even(H * (style.splitRatio ?? 0.4));
+        const BH = H - TH;
+        const ar = W / BH;
+        const gw = even(Math.min(vw, vh * ar));
+        const gh = even(Math.min(vh, vw / ar));
+        g.push(`[${v}]split[fa][fb]`);
+        g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${W}:${TH}:force_original_aspect_ratio=increase,crop=${W}:${TH},setsar=1${zp(W, TH)}[top]`);
+        g.push(`[fb]crop=${gw}:${gh}:${Math.round((vw - gw) * style.cropX)}:${Math.round((vh - gh) / 2)},scale=${W}:${BH}:force_original_aspect_ratio=increase,crop=${W}:${BH},setsar=1${zp(W, BH)}[bot]`);
+        g.push(`[top][bot]vstack=inputs=2,drawbox=x=0:y=${TH - 2}:w=${W}:h=4:color=black:t=fill[v0]`);
+    } else {
+        const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
+        const maxX = Math.max(0, vw - cw);
+        g.push(`[${v}]crop=w=${even(cw)}:h=${even(ch)}:x='${cropExpr(cropPoints, maxX)}':y=${Math.round(y)},scale=${W}:${H}:flags=bicubic,setsar=1${zp(W, H)}[v0]`);
+    }
+    return 'v0';
+}
+
+/** Logo, freeze text and progress bar: shared by the main pieces and the replay. */
+function finishing(o: RenderOptions, g: string[], inputs: string[], v: string, n: number, W: number, H: number, ws: number, freezeAt: number | null, tm: Timing): { v: string; n: number } {
+    const { style } = o;
+    if (freezeAt !== null && o.clip.freeze?.text.trim()) {
+        inputs.push('-i', '/freeze.png');
+        g.push(`[${v}][${n}:v]overlay=0:0:enable='gte(t,${freezeAt.toFixed(2)})'[vfz]`);
+        v = 'vfz';
+        n++;
+    }
+    if (o.brand.logo) {
+        inputs.push('-i', '/logo.png');
+        const lw = Math.round(W * o.brand.logoSize);
+        const m = Math.round(W * 0.04);
+        g.push(`[${n}:v]scale=${lw}:-1[lg]`);
+        g.push(`[${v}][lg]overlay=${o.brand.logoCorner.endsWith('l') ? m : `W-w-${m}`}:${o.brand.logoCorner.startsWith('t') ? m : `H-h-${m}`}[vl]`);
+        v = 'vl';
+        n++;
+    }
+    if (style.progressBar) {
+        const bh = even(Math.max(4, H * 0.008));
+        inputs.push('-f', 'lavfi', '-i', `color=c=${hex(style.highlight)}:s=${W}x${bh}:r=${FPS}`);
+        g.push(`[${v}]drawbox=x=0:y=${H - bh}:w=${W}:h=${bh}:color=white@0.25:t=fill[vpb]`);
+        g.push(`[vpb][${n}:v]overlay=x='-w+w*(t+${ws.toFixed(3)})/${tm.full.toFixed(3)}':y=${H - bh}:shortest=1[vp]`);
+        v = 'vp';
+        n++;
+    }
+    return { v, n };
+}
+
+const encodeArgs = (o: RenderOptions, len: number, out: string) => [
+    '-an',
+    '-t', f3(len),
+    '-c:v', 'libx264', '-preset', o.quality === 1080 ? 'veryfast' : 'ultrafast', '-crf', '22', '-pix_fmt', 'yuv420p',
+    '-r', String(FPS), '-video_track_timescale', '15360',
+    '-y', out
+];
+
+/**
+ * Video-only command for the piece of the main clip between output times ws and we.
+ * Every time value is shifted so the piece starts at 0.
+ */
+function videoPartCommand(o: RenderOptions, input: string, ws: number, we: number, W: number, H: number, freezeHere: boolean, out: string): string[] {
+    const { clip, style } = o;
+    const tm = timing(clip);
+    const tpl = getTemplate(style.template);
     const segs = keptSegments(clip);
-    const total = outputDuration(clip);
-    const freeze = clip.freeze && clip.freeze.seconds > 0 ? clip.freeze.seconds : 0;
     const outT = (src: number) => toOutputClamped(clip, src, segs);
-    const rel = (t: number) => t - ws; // output time -> time inside this piece
+    const rel = (t: number) => t - ws;
     const partLen = we - ws;
-    const videoEnd = Math.min(we, total); // the rest of this piece (if any) is the freeze ending
+    const videoEnd = Math.min(we, tm.total);
 
     // source ranges that land inside [ws, videoEnd)
     const pieces: { s: number; e: number }[] = [];
@@ -247,13 +342,11 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
         if (b - a > 0.001) pieces.push({ s: s.start + (a - os), e: s.start + (b - os) });
     }
     if (!pieces.length) {
-        // this piece is all freeze: start from the very last frame
         const last = segs[segs.length - 1];
         pieces.push({ s: Math.max(last.start, last.end - 0.1), e: last.end });
     }
     const srcFrom = pieces[0].s;
     const srcTo = pieces[pieces.length - 1].e;
-
     const inputs: string[] = ['-ss', f3(srcFrom), '-t', f3(srcTo - srcFrom + 0.05), '-i', input];
     const g: string[] = [];
     let n = 1;
@@ -269,39 +362,25 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
     const zooms = (clip.zooms ?? [])
         .map((z) => ({ start: rel(outT(z.start)), end: rel(outT(z.end)), scale: z.scale }))
         .filter((z) => z.end > 0 && z.start < partLen && z.end - z.start > 0.05);
-    const zoom = (w: number, h: number) => {
-        if (!zooms.length) return '';
+    const zoomAt = (ft: string) => {
+        if (!zooms.length) return null;
         let expr = '1';
-        for (const z of zooms) expr = `if(between(in/${FPS},${z.start.toFixed(2)},${z.end.toFixed(2)}),${z.scale.toFixed(3)},${expr})`;
-        return `,zoompan=z='${expr}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s=${w}x${h}:fps=${FPS}`;
+        for (const z of zooms) expr = `if(between(${ft},${z.start.toFixed(2)},${z.end.toFixed(2)}),${z.scale.toFixed(3)},${expr})`;
+        return expr;
     };
+    const shakeTimes = (clip.shakes ?? []).filter((s) => s.kind !== 'flash').map((s) => rel(outT(s.t))).filter((a) => a > -0.5 && a < partLen);
+    const shake = shakeTimes.length ? shakeTimes.map((a) => `between(in/${FPS},${a.toFixed(2)},${(a + 0.45).toFixed(2)})`).join('+') : null;
+    const cropPoints = cropPath(clip, style, o.videoWidth, o.videoHeight).map((p) => ({ t: rel(outT(Math.max(clip.start, p.t))), x: p.x }));
+    v = layout(o, g, v, W, H, zoomAt, shake, cropPoints);
 
-    if (style.layout === 'fit') {
-        g.push(`[${v}]split[fa][fb]`);
-        g.push(`[fa]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=luma_radius=28:luma_power=2,eq=brightness=-0.07[bg]`);
-        g.push(`[fb]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg]`);
-        g.push(`[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1${zoom(W, H)}[v0]`);
-    } else if (style.layout === 'split') {
-        const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
-        const TH = even(H * (style.splitRatio ?? 0.4));
-        const BH = H - TH;
-        const ar = W / BH;
-        const gw = even(Math.min(vw, vh * ar));
-        const gh = even(Math.min(vh, vw / ar));
-        g.push(`[${v}]split[fa][fb]`);
-        g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${W}:${TH}:force_original_aspect_ratio=increase,crop=${W}:${TH},setsar=1${zoom(W, TH)}[top]`);
-        g.push(`[fb]crop=${gw}:${gh}:${Math.round((vw - gw) * style.cropX)}:${Math.round((vh - gh) / 2)},scale=${W}:${BH}:force_original_aspect_ratio=increase,crop=${W}:${BH},setsar=1${zoom(W, BH)}[bot]`);
-        g.push(`[top][bot]vstack=inputs=2,drawbox=x=0:y=${TH - 2}:w=${W}:h=4:color=black:t=fill[v0]`);
-    } else {
-        const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
-        const maxX = Math.max(0, vw - cw);
-        const points = cropPath(clip, style, vw, vh).map((p) => ({ t: rel(outT(Math.max(clip.start, p.t))), x: p.x }));
-        g.push(`[${v}]crop=w=${even(cw)}:h=${even(ch)}:x='${cropExpr(points, maxX)}':y=${Math.round(y)},scale=${W}:${H}:flags=bicubic,setsar=1${zoom(W, H)}[v0]`);
+    for (const [i, s] of (clip.shakes ?? []).filter((s) => s.kind !== 'shake').entries()) {
+        const a = rel(outT(s.t));
+        if (a < -0.2 || a > partLen) continue;
+        g.push(`[${v}]drawbox=x=0:y=0:w=iw:h=ih:color=white@0.6:t=fill:enable='between(t,${a.toFixed(2)},${(a + 0.09).toFixed(2)})'[vfl${i}]`);
+        v = `vfl${i}`;
     }
-    v = 'v0';
-
-    if (isLast && freeze) {
-        g.push(`[${v}]tpad=stop_mode=clone:stop_duration=${(freeze + 0.2).toFixed(2)}[vz]`);
+    if (freezeHere && tm.freeze) {
+        g.push(`[${v}]tpad=stop_mode=clone:stop_duration=${(tm.freeze + 0.2).toFixed(2)}[vz]`);
         v = 'vz';
     }
     g.push(`[${v}]subtitles=/subs.ass:fontsdir=/fonts[vs]`);
@@ -314,20 +393,14 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
         n++;
     };
     if (clip.hookTitle?.text.trim() && clip.hookTitle.seconds > 0 && ws < clip.hookTitle.seconds) {
-        overlayImage('/title.png', `between(t,0,${rel(Math.min(total, clip.hookTitle.seconds)).toFixed(2)})`, 'vt');
+        overlayImage('/title.png', `between(t,0,${rel(Math.min(tm.total, clip.hookTitle.seconds)).toFixed(2)})`, 'vt');
     }
-    if (freeze && clip.freeze?.text.trim() && we > total) overlayImage('/freeze.png', `gte(t,${rel(total).toFixed(2)})`, 'vfz');
-
-    if (o.brand.logo) {
-        inputs.push('-i', '/logo.png');
-        const lw = Math.round(W * o.brand.logoSize);
-        const m = Math.round(W * 0.04);
-        g.push(`[${n}:v]scale=${lw}:-1[lg]`);
-        g.push(`[${v}][lg]overlay=${o.brand.logoCorner.endsWith('l') ? m : `W-w-${m}`}:${o.brand.logoCorner.startsWith('t') ? m : `H-h-${m}`}[vl]`);
-        v = 'vl';
-        n++;
-    }
-
+    (clip.stickers ?? []).forEach((st, i) => {
+        const a = rel(outT(st.start));
+        const b = rel(outT(st.end));
+        if (b <= 0 || a >= partLen || b - a < 0.05) return;
+        overlayImage(`/sticker_${i}.png`, `between(t,${a.toFixed(2)},${b.toFixed(2)})`, `vst${i}`);
+    });
     if (style.emojis && tpl.id !== 'none') {
         const groups = groupWords(displayWords(o.words, clip, style, o.speakers, true), style.wordsPerLine);
         const events = emojiEvents(clip, groups).slice(0, 10);
@@ -351,114 +424,186 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
             });
         });
     }
-
-    if (style.progressBar) {
-        const bh = even(Math.max(4, H * 0.008));
-        inputs.push('-f', 'lavfi', '-i', `color=c=${hex(style.highlight)}:s=${W}x${bh}:r=${FPS}`);
-        g.push(`[${v}]drawbox=x=0:y=${H - bh}:w=${W}:h=${bh}:color=white@0.25:t=fill[vpb]`);
-        g.push(`[vpb][${n}:v]overlay=x='-w+w*(t+${ws.toFixed(3)})/${(total + freeze).toFixed(3)}':y=${H - bh}:shortest=1[vp]`);
-        v = 'vp';
-        n++;
-    }
-
-    return [
-        ...inputs,
-        '-filter_complex', g.join(';'),
-        '-map', `[${v}]`, '-an',
-        '-t', f3(partLen),
-        '-c:v', 'libx264', '-preset', o.quality === 1080 ? 'veryfast' : 'ultrafast', '-crf', '22', '-pix_fmt', 'yuv420p',
-        '-r', String(FPS), '-video_track_timescale', '15360',
-        '-y', out
-    ];
+    const fin = finishing(o, g, inputs, v, n, W, H, ws, freezeHere && tm.freeze ? rel(tm.total) : null, tm);
+    return [...inputs, '-filter_complex', g.join(';'), '-map', `[${fin.v}]`, ...encodeArgs(o, partLen, out)];
 }
 
-/** The whole soundtrack in one pass: cut parts removed, bleeps, silence for the freeze ending. */
-function audioCommand(o: RenderOptions, input: string, out: string): string[] {
+/** The instant replay: a moment slowed down and zoomed in, played after the clip (then the freeze ending). */
+function replayCommand(o: RenderOptions, input: string, W: number, H: number, out: string): string[] {
     const { clip, style } = o;
-    const segs = keptSegments(clip);
-    const total = outputDuration(clip);
-    const freeze = clip.freeze && clip.freeze.seconds > 0 ? clip.freeze.seconds : 0;
-    const inputs = ['-ss', f3(clip.start), '-t', f3(clip.end - clip.start), '-i', input];
-    const g: string[] = [];
-    let a = '0:a';
+    const tm = timing(clip);
+    const r = clip.replay!;
+    const len = tm.replay + tm.freeze;
+    const inputs: string[] = ['-ss', f3(r.start), '-t', f3(r.end - r.start + 0.05), '-i', input];
+    const g: string[] = [`[0:v]trim=start=0:end=${f3(r.end - r.start)},setpts=(PTS-STARTPTS)/${r.speed.toFixed(3)},fps=${FPS},setsar=1[vr]`];
     let n = 1;
-    if (segs.length > 1 || segs[0].start > clip.start + 0.01 || segs[0].end < clip.end - 0.01) {
-        segs.forEach((s, i) => g.push(`[0:a]atrim=start=${f3(s.start - clip.start)}:end=${f3(s.end - clip.start)},asetpts=PTS-STARTPTS[as${i}]`));
-        g.push(`${segs.map((_, i) => `[as${i}]`).join('')}concat=n=${segs.length}:v=0:a=1[acat]`);
-        a = 'acat';
+    const pos = cropPath(clip, style, o.videoWidth, o.videoHeight);
+    const at = pos.reduce((best, p) => (p.t <= r.start ? p : best), pos[0]);
+    let v = layout(o, g, 'vr', W, H, () => '1.18', null, [{ t: 0, x: at.x }]);
+    if (tm.freeze) {
+        g.push(`[${v}]tpad=stop_mode=clone:stop_duration=${(tm.freeze + 0.2).toFixed(2)}[vz]`);
+        v = 'vz';
     }
-    if (style.censor === 'bleep') {
-        const spans = bleepSpans(o.words.filter((w) => w.end > clip.start && w.start < clip.end))
-            .map((s) => ({ start: toOutput(clip, s.start, segs), end: toOutput(clip, Math.min(s.end, clip.end), segs) }))
-            .filter((s): s is { start: number; end: number } => s.start !== null && s.end !== null && s.end > s.start);
-        if (spans.length) {
-            inputs.push('-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000'); // note: sine plays at 1/8 volume by default
-            g.push(`[${a}]volume=volume=0:enable='${between(spans)}'[am]`);
-            g.push(`[${n}:a]volume=1.8,volume=volume=0:enable='lt(${between(spans)},1)'[bp]`);
-            g.push(`[am][bp]amix=inputs=2:duration=first:dropout_transition=0,volume=2[ab]`);
-            a = 'ab';
-            n++;
+    inputs.push('-i', '/replay.png');
+    g.push(`[${v}][${n}:v]overlay=0:0:enable='lt(t,${tm.replay.toFixed(2)})'[vrb]`);
+    v = 'vrb';
+    n++;
+    const fin = finishing(o, g, inputs, v, n, W, H, tm.total, tm.freeze ? tm.replay : null, tm);
+    return [...inputs, '-filter_complex', g.join(';'), '-map', `[${fin.v}]`, ...encodeArgs(o, len, out)];
+}
+
+/** The whole soundtrack in one pass: cuts, bleeps, replay, freeze silence, sound effects, music. */
+function audioCommand(o: RenderOptions, input: string, out: string, sfxFiles: { path: string; at: number }[], musicPath: string | null, hasSource: boolean): string[] {
+    const { clip, style } = o;
+    const tm = timing(clip);
+    const segs = keptSegments(clip);
+    const g: string[] = [];
+    const inputs: string[] = [];
+    let n = 0;
+    let a: string;
+    if (hasSource) {
+        inputs.push('-ss', f3(clip.start), '-t', f3(clip.end - clip.start), '-i', input);
+        n = 1;
+        a = '0:a';
+        if (segs.length > 1 || segs[0].start > clip.start + 0.01 || segs[0].end < clip.end - 0.01) {
+            segs.forEach((s, i) => g.push(`[0:a]atrim=start=${f3(s.start - clip.start)}:end=${f3(s.end - clip.start)},asetpts=PTS-STARTPTS[as${i}]`));
+            g.push(`${segs.map((_, i) => `[as${i}]`).join('')}concat=n=${segs.length}:v=0:a=1[acat]`);
+            a = 'acat';
         }
+        g.push(`[${a}]aresample=48000,aformat=channel_layouts=stereo[amain]`);
+        a = 'amain';
+        if (style.censor === 'bleep') {
+            const spans = bleepSpans(o.words.filter((w) => w.end > clip.start && w.start < clip.end))
+                .map((s) => ({ start: toOutput(clip, s.start, segs), end: toOutput(clip, Math.min(s.end, clip.end), segs) }))
+                .filter((s): s is { start: number; end: number } => s.start !== null && s.end !== null && s.end > s.start);
+            if (spans.length) {
+                inputs.push('-f', 'lavfi', '-i', 'sine=frequency=1000:sample_rate=48000'); // note: sine plays at 1/8 volume by default
+                g.push(`[${a}]volume=volume=0:enable='${between(spans)}'[am]`);
+                g.push(`[${n}:a]volume=1.8,volume=volume=0:enable='lt(${between(spans)},1)',aformat=channel_layouts=stereo[bp]`);
+                g.push(`[am][bp]amix=inputs=2:duration=first:dropout_transition=0,volume=2[ab]`);
+                a = 'ab';
+                n++;
+            }
+        }
+        if (tm.replay > 0 && clip.replay) {
+            const r = clip.replay;
+            g.push(`[0:a]atrim=start=${f3(r.start - clip.start)}:end=${f3(r.end - clip.start)},asetpts=PTS-STARTPTS,atempo=${Math.max(0.5, Math.min(2, r.speed)).toFixed(3)},aresample=48000,aformat=channel_layouts=stereo[arep]`);
+            g.push(`[${a}][arep]concat=n=2:v=0:a=1[awr]`);
+            a = 'awr';
+        }
+    } else {
+        inputs.push('-f', 'lavfi', '-t', f3(tm.full), '-i', 'anullsrc=r=48000:cl=stereo');
+        n = 1;
+        a = '0:a';
     }
-    g.push(`[${a}]aresample=48000,aformat=channel_layouts=stereo,apad=pad_dur=${(freeze + 0.5).toFixed(2)}[aout]`);
-    return [...inputs, '-filter_complex', g.join(';'), '-map', '[aout]', '-t', f3(total + freeze), '-c:a', 'aac', '-b:a', '160k', '-y', out];
+    g.push(`[${a}]apad=whole_dur=${f3(tm.full)}[apad]`);
+    a = 'apad';
+
+    // sound effects: each delayed to its moment and padded to full length so the mix level never jumps
+    if (sfxFiles.length) {
+        const vol = (style.sfxVolume ?? 0.8).toFixed(2);
+        const labels: string[] = [];
+        sfxFiles.forEach((s, i) => {
+            inputs.push('-i', s.path);
+            const ms = Math.max(0, Math.round(s.at * 1000));
+            g.push(`[${n}:a]aresample=48000,aformat=channel_layouts=stereo,adelay=${ms}|${ms},volume=${vol},apad=whole_dur=${f3(tm.full)}[sx${i}]`);
+            labels.push(`[sx${i}]`);
+            n++;
+        });
+        g.push(`[${a}]${labels.join('')}amix=inputs=${labels.length + 1}:duration=first:dropout_transition=0,volume=${labels.length + 1}[asfx]`);
+        a = 'asfx';
+    }
+
+    // background music: looped, and ducked under speech if asked
+    if (musicPath && o.music) {
+        inputs.push('-stream_loop', '-1', '-i', musicPath);
+        g.push(`[${n}:a]aresample=48000,aformat=channel_layouts=stereo,volume=${o.music.volume.toFixed(2)}[mus]`);
+        if (o.music.duck) {
+            g.push(`[${a}]asplit=2[voice][sc]`);
+            g.push(`[mus][sc]sidechaincompress=threshold=0.02:ratio=12:attack=20:release=400[duck]`);
+            g.push(`[voice][duck]amix=inputs=2:duration=first:dropout_transition=0,volume=2[amus]`);
+        } else g.push(`[${a}][mus]amix=inputs=2:duration=first:dropout_transition=0,volume=2[amus]`);
+        a = 'amus';
+        n++;
+    }
+    return [...inputs, '-filter_complex', g.join(';'), '-map', `[${a}]`, '-t', f3(tm.full), '-c:a', 'aac', '-b:a', '160k', '-y', out];
 }
 
 /**
  * Builds the finished clip: removes cut parts, frames it (crop / speaker tracking / fit / facecam
- * split), punch-in zooms, captions, title and freeze text, logo, emoji, progress bar and bleeps.
- * The clip is rendered as pieces in parallel (one per processor core) and joined.
+ * split), zooms, shakes, captions, title, stickers, emoji, logo, progress bar, replay, freeze,
+ * bleeps, sound effects and music. The clip is rendered as pieces in parallel and joined.
  */
 export async function renderClip(o: RenderOptions): Promise<Blob> {
     const { clip, style } = o;
     const { W, H } = outputSize(style.aspect, o.quality);
     if (keptSegments(clip).length === 0) throw new Error('Everything in this clip is cut. Restore part of it in the timeline.');
-    const total = outputDuration(clip);
-    const freeze = clip.freeze && clip.freeze.seconds > 0 ? clip.freeze.seconds : 0;
-    const full = snap(total + freeze);
-    const audio = await hasAudio(o.file);
+    const tm = timing(clip);
+    const hasSource = await hasAudio(o.file);
     const assets = await prepareAssets(o, W, H);
 
-    // pieces of at least ~4 seconds, one per engine
-    const nParts = Math.max(1, Math.min(parallelism(), Math.floor(full / 4)));
+    // main part (+ freeze when there's no replay) split into pieces of at least ~4 seconds
+    const mainLen = snap(tm.total + (tm.replay ? 0 : tm.freeze));
+    const nParts = Math.max(1, Math.min(parallelism(), Math.floor(mainLen / 4)));
     const bounds: number[] = [0];
-    for (let i = 1; i < nParts; i++) bounds.push(snap((full * i) / nParts));
-    bounds.push(full);
+    for (let i = 1; i < nParts; i++) bounds.push(snap((mainLen * i) / nParts));
+    bounds.push(mainLen);
+    const jobs = nParts + (tm.replay ? 1 : 0);
 
     const report = () => {
         let done = 0;
-        for (let i = 0; i < nParts; i++) done += pool[i]?.progress ?? 0;
-        o.onProgress(Math.min(0.95, (done / nParts) * 0.92));
+        for (let i = 0; i < jobs; i++) done += pool[i % Math.max(1, parallelism())]?.progress ?? 0;
+        o.onProgress(Math.min(0.95, (done / jobs) * 0.9));
     };
     progressListener = report;
 
-    const dbg = (m: string) => (globalThis as { __clipsmithDebug?: boolean }).__clipsmithDebug && console.log(`[ffmpeg ${m}`);
-    const renderPart = async (i: number): Promise<Uint8Array> => {
-        dbg(`${i}] piece starting`);
-        const { ff, input } = await mountOn(i, o.file);
-        dbg(`${i}] engine ready, input mounted`);
-        engineAt(i).progress = 0;
+    const runJob = async (engine: number, make: (input: string) => string[], ass: string | null, out: string): Promise<Uint8Array> => {
+        const { ff, input } = await mountOn(engine, o.file);
+        engineAt(engine).progress = 0;
         // writeFile hands the bytes over to the engine (the buffer is moved, not copied), so give each engine its own copy
         for (const f of assets.files) await ff.writeFile(f.path, f.data.slice());
-        await ff.writeFile('/subs.ass', new TextEncoder().encode(shiftAss(assets.ass, bounds[i])));
-        const out = `/part_${i}.mp4`;
-        const code = await ff.exec(videoPartCommand(o, input, bounds[i], bounds[i + 1], W, H, i === nParts - 1, out));
+        if (ass !== null) await ff.writeFile('/subs.ass', new TextEncoder().encode(ass));
+        const code = await ff.exec(make(input));
         if (code !== 0) throw new Error('Rendering failed. Try 720p, or turn off some effects, then try again.');
         const data = (await ff.readFile(out)) as Uint8Array;
         await ff.deleteFile(out);
-        engineAt(i).progress = 1;
+        engineAt(engine).progress = 1;
         report();
         return data;
     };
 
     try {
-        const parts = await Promise.all(Array.from({ length: nParts }, (_, i) => renderPart(i)));
+        const tasks: Promise<Uint8Array>[] = [];
+        for (let i = 0; i < nParts; i++) {
+            tasks.push(runJob(i, (input) => videoPartCommand(o, input, bounds[i], bounds[i + 1], W, H, !tm.replay && i === nParts - 1, `/part_${i}.mp4`), shiftAss(assets.ass, bounds[i]), `/part_${i}.mp4`));
+        }
+        if (tm.replay) {
+            // the replay goes on its own engine when one is free, else after the first piece
+            const eng = nParts < parallelism() ? nParts : 0;
+            const after = eng === 0 ? tasks[0] : Promise.resolve(new Uint8Array());
+            tasks.push(after.then(() => runJob(eng, (input) => replayCommand(o, input, W, H, '/replay.mp4'), null, '/replay.mp4')));
+        }
+        const parts = await Promise.all(tasks);
 
         // sound in one pass, then join everything on the first engine (no re-encoding)
         const { ff, input } = await mountOn(0, o.file);
-        if (audio) {
-            const code = await ff.exec(audioCommand(o, input, '/audio.m4a'));
-            if (code !== 0) throw new Error('Could not process the sound. Try turning off the bleep, then export again.');
+        const sfx: { path: string; at: number }[] = [];
+        for (const [i, s] of (clip.sfx ?? []).entries()) {
+            const at = toOutput(clip, s.t);
+            if (at === null) continue;
+            const path = `/sfx_${i}.wav`;
+            await ff.writeFile(path, await sfxWav(s.kind));
+            sfx.push({ path, at });
+        }
+        let musicPath: string | null = null;
+        if (o.music?.blob) {
+            musicPath = '/music.' + (o.music.name.split('.').pop() || 'mp3');
+            await ff.writeFile(musicPath, new Uint8Array(await o.music.blob.arrayBuffer()));
+        }
+        const withAudio = hasSource || sfx.length > 0 || !!musicPath;
+        if (withAudio) {
+            const code = await ff.exec(audioCommand(o, input, '/audio.m4a', sfx, musicPath, hasSource));
+            if (code !== 0) throw new Error('Could not process the sound. Try turning off the bleep, sound effects or music, then export again.');
         }
         const list: string[] = [];
         for (let i = 0; i < parts.length; i++) {
@@ -469,17 +614,53 @@ export async function renderClip(o: RenderOptions): Promise<Blob> {
         const out = '/out.mp4';
         const code = await ff.exec([
             '-f', 'concat', '-safe', '0', '-i', '/join.txt',
-            ...(audio ? ['-i', '/audio.m4a', '-map', '0:v', '-map', '1:a'] : []),
-            '-c', 'copy', '-t', f3(full), '-movflags', '+faststart', '-y', out
+            ...(withAudio ? ['-i', '/audio.m4a', '-map', '0:v', '-map', '1:a'] : []),
+            '-c', 'copy', '-t', f3(tm.full), '-movflags', '+faststart', '-y', out
         ]);
         for (let i = 0; i < parts.length; i++) await ff.deleteFile(`/join_${i}.mp4`).catch(() => {});
+        for (const s of sfx) await ff.deleteFile(s.path).catch(() => {});
+        if (musicPath) await ff.deleteFile(musicPath).catch(() => {});
         if (code !== 0) throw new Error('Could not join the video pieces. Please try again.');
         const data = (await ff.readFile(out)) as Uint8Array;
         await ff.deleteFile(out);
-        if (audio) await ff.deleteFile('/audio.m4a').catch(() => {});
+        if (withAudio) await ff.deleteFile('/audio.m4a').catch(() => {});
         o.onProgress(1);
         return new Blob([data], { type: 'video/mp4' });
     } finally {
         progressListener = null;
     }
+}
+
+/** Renders a title card (number + title) as a short video piece, for compilations. */
+export async function renderCard(png: Uint8Array, seconds: number, quality: 720 | 1080, withAudio: boolean): Promise<Uint8Array> {
+    const ff = await getFFmpeg();
+    await ff.writeFile('/card.png', png);
+    const code = await ff.exec([
+        '-loop', '1', '-t', f3(seconds), '-i', '/card.png',
+        ...(withAudio ? ['-f', 'lavfi', '-t', f3(seconds), '-i', 'anullsrc=r=48000:cl=stereo'] : []),
+        '-c:v', 'libx264', '-preset', quality === 1080 ? 'veryfast' : 'ultrafast', '-crf', '22', '-pix_fmt', 'yuv420p', '-r', String(FPS), '-video_track_timescale', '15360',
+        ...(withAudio ? ['-c:a', 'aac', '-b:a', '160k'] : []),
+        '-t', f3(seconds), '-y', '/card.mp4'
+    ]);
+    if (code !== 0) throw new Error('Could not make the title card.');
+    const data = (await ff.readFile('/card.mp4')) as Uint8Array;
+    await ff.deleteFile('/card.mp4');
+    return data;
+}
+
+/** Joins finished clips (and title cards) into one video without re-encoding. */
+export async function joinVideos(parts: Uint8Array[]): Promise<Blob> {
+    const ff = await getFFmpeg();
+    const list: string[] = [];
+    for (let i = 0; i < parts.length; i++) {
+        await ff.writeFile(`/comp_${i}.mp4`, parts[i]);
+        list.push(`file '/comp_${i}.mp4'`);
+    }
+    await ff.writeFile('/comp.txt', new TextEncoder().encode(list.join('\n')));
+    const code = await ff.exec(['-f', 'concat', '-safe', '0', '-i', '/comp.txt', '-c', 'copy', '-movflags', '+faststart', '-y', '/comp.mp4']);
+    for (let i = 0; i < parts.length; i++) await ff.deleteFile(`/comp_${i}.mp4`).catch(() => {});
+    if (code !== 0) throw new Error('Could not join the clips.');
+    const data = (await ff.readFile('/comp.mp4')) as Uint8Array;
+    await ff.deleteFile('/comp.mp4');
+    return new Blob([data], { type: 'video/mp4' });
 }

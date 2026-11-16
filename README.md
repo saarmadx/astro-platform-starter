@@ -11,6 +11,9 @@ Turn long videos (podcasts, interviews, talks, streams) into short vertical clip
 - **18 caption templates** with word-by-word highlighting, keyword emphasis, auto emoji and top / middle / bottom placement.
 - **Timeline editor**: video track with thumbnails and trim handles, split / delete / restore, captions track (click to edit), effects track (draggable zooms, hook title, freeze), audio waveform with bleeps, keyboard shortcuts and undo.
 - **Effects**: facecam + gameplay split layout (auto facecam detection), punch-in zooms (auto on laughs), hook title, remove silences, freeze-frame ending, progress bar, animated emoji, swear filter with bleep, speaker colours.
+- **Optional effects** (each with an on/off switch): sound effects (synthesised in the browser), instant replay, screen shake & flash, text stickers, background music with ducking, presets and apply-to-all-clips.
+- **More**: stream chat spikes (Twitch/YouTube chat replays), improve a clip or translate captions via a free Claude chat, compilation maker with countdown cards, project backup/restore, undo/redo.
+- **Speed**: exports render pieces in parallel on several ffmpeg.wasm engines (one per core) and join them without re-encoding.
 - **Extras**: watch all clips back to back, export all with a titles/descriptions file, title ideas, thumbnail maker, best clips across projects.
 - **Brand kit**: logo watermark on every export.
 - **Formats**: 9:16, 1:1, 16:9; export 720p or 1080p MP4, one clip or all, plus `.srt` captions.

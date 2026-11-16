@@ -1,6 +1,7 @@
 // Loudness analysis. Speech-to-text usually drops laughter, so we look at the audio itself:
 // loud bursts with few or no words are usually laughter or a big reaction, which is the
 // strongest sign that something funny just happened.
+import { chatEvents } from './chat';
 import type { AudioEvent, Energy, Word } from './types';
 
 export const ENERGY_STEP = 0.25; // seconds per loudness sample
@@ -77,4 +78,10 @@ export function findAudioEvents(energy: Energy | undefined, words: Word[]): Audi
     }
     // keep the strongest few hundred so the prompt stays small
     return events.sort((x, y) => y.strength - x.strength).slice(0, 300).sort((x, y) => x.start - y.start);
+}
+
+/** Laughs/reactions from the audio plus spikes from a stream chat replay, if one was added. */
+export function projectEvents(p: { transcript?: { energy?: Energy; words: Word[] }; chat?: { spikes: { t: number; count: number; laughs: number }[] } }): AudioEvent[] {
+    const audio = p.transcript ? findAudioEvents(p.transcript.energy, p.transcript.words) : [];
+    return [...audio, ...chatEvents(p.chat?.spikes)].sort((a, b) => a.start - b.start);
 }

@@ -6,6 +6,7 @@ import { TemplateSwatch } from './ui';
 
 export type NewProjectInput = {
     file: File;
+    chatFile?: File;
     aspect: Aspect;
     template: string;
     highlight: string;
@@ -45,11 +46,12 @@ type Props = {
     onCreate: (input: NewProjectInput) => Promise<void>;
     onOpen: (id: string) => void;
     onOpenClip: (projectId: string, clipId: string) => void;
+    onRestore: (projects: Project[]) => void;
     accessCode: string;
     setAccessCode: (c: string) => void;
 };
 
-export default function Home({ projects, running, onCreate, onOpen, onOpenClip, accessCode, setAccessCode }: Props) {
+export default function Home({ projects, running, onCreate, onOpen, onOpenClip, onRestore, accessCode, setAccessCode }: Props) {
     const [file, setFile] = useState<File | null>(null);
     const [length, setLength] = useState('auto');
     const [maxClips, setMaxClips] = useState(10);
@@ -62,6 +64,8 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     const [language, setLanguage] = useState('english');
     const [asrQuality, setAsrQuality] = useState<AsrQuality>('fast');
     const [gpu, setGpu] = useState<boolean | null>(null);
+    const [chatFile, setChatFile] = useState<File | null>(null);
+    const [backupMsg, setBackupMsg] = useState('');
 
     // check once whether free captions can use the graphics card (much faster)
     useEffect(() => {
@@ -100,7 +104,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
         const tpl = TEMPLATES.find((t) => t.id === template)!;
         setBusy(true);
         try {
-            await onCreate({ file, aspect, template, highlight: tpl.defaultHighlight, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality } });
+            await onCreate({ file, chatFile: chatFile ?? undefined, aspect, template, highlight: tpl.defaultHighlight, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality } });
         } catch (e) {
             setError((e as Error).message);
             setBusy(false);
@@ -198,6 +202,14 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                 ))}
                             </div>
                         </Option>
+                        <Option label="Stream chat replay (optional)">
+                            <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-white/10 px-3 py-2 text-sm hover:bg-white/5">
+                                <span className="min-w-0 truncate">{chatFile ? `💬 ${chatFile.name}` : 'Add the chat file to find moments where chat exploded'}</span>
+                                <span className="text-xs text-accent">{chatFile ? 'Change' : 'Choose'}</span>
+                                <input type="file" accept=".json,.txt,.log,application/json,text/plain" className="sr-only" onChange={(e) => setChatFile(e.target.files?.[0] ?? null)} />
+                            </label>
+                            <span className="text-xs text-muted">Twitch chat JSON (TwitchDownloader), YouTube live chat JSON (yt-dlp) or a text log with timestamps.</span>
+                        </Option>
                         <Option label="Topics to look for (optional)">
                             <input className="input" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. money tips, funny stories" />
                         </Option>
@@ -256,7 +268,48 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
             )}
 
             <section>
-                <h2 className="mb-4 text-xl font-bold">Your projects</h2>
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-xl font-bold">Your projects</h2>
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            className="btn-ghost !py-1.5"
+                            disabled={!projects.length}
+                            onClick={() => {
+                                // music files are left out to keep the backup small
+                                const data = JSON.stringify({ app: 'clipsmith', version: 1, projects: projects.map((p) => ({ ...p, music: undefined })) });
+                                const a = document.createElement('a');
+                                a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
+                                a.download = `clipsmith-backup-${new Date().toISOString().slice(0, 10)}.json`;
+                                a.click();
+                                setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+                                setBackupMsg(`Saved a backup of ${projects.length} project${projects.length > 1 ? 's' : ''}. Keep the file somewhere safe.`);
+                            }}
+                        >
+                            ⬇ Back up projects
+                        </button>
+                        <label className="btn-ghost cursor-pointer !py-1.5">
+                            ⬆ Restore backup
+                            <input
+                                type="file"
+                                accept=".json,application/json"
+                                className="sr-only"
+                                onChange={async (e) => {
+                                    const f = e.target.files?.[0];
+                                    if (!f) return;
+                                    try {
+                                        const data = JSON.parse(await f.text());
+                                        if (data.app !== 'clipsmith' || !Array.isArray(data.projects)) throw new Error();
+                                        onRestore(data.projects as Project[]);
+                                        setBackupMsg(`Restored ${data.projects.length} project${data.projects.length > 1 ? 's' : ''}. Select each video again when you open it.`);
+                                    } catch {
+                                        setBackupMsg('That file is not a Clipsmith backup.');
+                                    }
+                                }}
+                            />
+                        </label>
+                    </div>
+                </div>
+                {backupMsg && <p className="mb-3 text-sm text-accent">{backupMsg}</p>}
                 {projects.length === 0 ? (
                     <p className="text-muted">Projects you create appear here, so you can come back and keep editing.</p>
                 ) : (

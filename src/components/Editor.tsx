@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { findAudioEvents } from '../lib/audio';
+import { projectEvents } from '../lib/audio';
 import { bleepSpans } from '../lib/censor';
 import { buildSrt, displayWords, groupWords } from '../lib/captions';
-import { drawScene, drawVideoLayer, roundRect, wrap } from '../lib/draw';
+import { drawScene, drawVideoLayer, roundRect, stickerBox, wrap } from '../lib/draw';
+import { autoReplay, autoSfx, autoShakes, replayLength } from '../lib/fx';
+import { playSfx, SFX_KINDS } from '../lib/sfx';
 import { analyseClip, detectFacecam } from '../lib/faces';
 import { outputSize } from '../lib/geometry';
 import { DEFAULT_SPEAKER_COLORS, TEMPLATES, TITLE_FONT } from '../lib/templates';
 import { mergeSpans, outputDuration, silenceCuts, skipCut, toOutputClamped } from '../lib/timeline';
 import { titleIdeas } from '../lib/titles';
 import { fixPrompt, parseFixes, replacePhrase } from '../lib/fixwords';
-import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, StyleSettings, Word } from '../lib/types';
+import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, SfxKind, StyleSettings, Word } from '../lib/types';
 import { renderClip } from '../lib/video';
 import { Segmented } from './Home';
 import { safeName, saveBlob } from './ProjectView';
@@ -63,6 +65,12 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const logoRef = useRef<HTMLImageElement | null>(null);
     const freezeRef = useRef<number | null>(null); // performance.now() when the freeze ending started
+    const replayRef = useRef(false); // true while the preview plays the instant replay
+    const lastTimeRef = useRef(0);
+    const selectedStickerRef = useRef<number | null>(null);
+    const stickerDrag = useRef<null | { i: number; dx: number; dy: number }>(null);
+    const future = useRef<Clip[]>([]);
+    const [futureLen, setFutureLen] = useState(0);
 
     useEffect(() => {
         if (!brand.logo) {
@@ -78,13 +86,16 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         () => (clip ? groupWords(displayWords(words, clip, style, project.speakers, false), style.wordsPerLine) : []),
         [words, clip?.start, clip?.end, clip?.cuts, clip?.keywords, style, project.speakers]
     );
-    const events = useMemo(() => (project.transcript ? findAudioEvents(project.transcript.energy, project.transcript.words) : []), [project.transcript]);
+    const events = useMemo(() => projectEvents(project), [project.transcript, project.chat]);
     const bleeps = useMemo(() => (style.censor === 'bleep' && clip ? bleepSpans(words.filter((w) => w.end > clip.start && w.start < clip.end)) : []), [style.censor, words, clip?.start, clip?.end]);
     const preview = outputSize(style.aspect, 540);
 
     // ---------- preview loop: skip cuts, loop, hold the freeze ending ----------
-    const sceneRef = useRef({ clip, style, brand, groups });
-    sceneRef.current = { clip, style, brand, groups };
+    const musicUrl = useMemo(() => (project.music ? URL.createObjectURL(project.music.blob) : ''), [project.music?.blob]);
+    useEffect(() => () => { if (musicUrl) URL.revokeObjectURL(musicUrl); }, [musicUrl]);
+    const musicRef = useRef<HTMLAudioElement>(null);
+    const sceneRef = useRef({ clip, style, brand, groups, music: project.music, words });
+    sceneRef.current = { clip, style, brand, groups, music: project.music, words };
     useEffect(() => {
         let raf = 0;
         const loop = () => {
@@ -93,6 +104,13 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             const s = sceneRef.current;
             if (v && c && s.clip) {
                 let freezing: number | null = null;
+                const startFreezeOrLoop = () => {
+                    if (s.clip.freeze && s.clip.freeze.seconds > 0) {
+                        v.pause();
+                        freezeRef.current = performance.now();
+                        freezing = 0;
+                    } else v.currentTime = s.clip.start;
+                };
                 if (freezeRef.current !== null) {
                     const fz = s.clip.freeze?.seconds ?? 0;
                     const prog = (performance.now() - freezeRef.current) / 1000 / Math.max(0.1, fz);
@@ -101,19 +119,56 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                         v.currentTime = s.clip.start;
                         v.play().catch(() => {});
                     } else freezing = prog;
+                } else if (replayRef.current) {
+                    // instant replay: slowed down, then the freeze ending or back to the start
+                    const r = s.clip.replay;
+                    if (!r || v.currentTime >= r.end || v.paused) {
+                        replayRef.current = false;
+                        v.playbackRate = 1;
+                        if (!v.paused) startFreezeOrLoop();
+                    }
                 } else if (!v.paused) {
                     const skip = skipCut(s.clip, v.currentTime);
                     if (skip !== v.currentTime) v.currentTime = skip;
-                    if (v.currentTime >= s.clip.end || v.currentTime < s.clip.start - 0.5) {
-                        if (s.clip.freeze && s.clip.freeze.seconds > 0 && v.currentTime >= s.clip.end) {
-                            v.pause();
-                            freezeRef.current = performance.now();
-                            freezing = 0;
-                        } else v.currentTime = s.clip.start;
+                    if (v.currentTime >= s.clip.end) {
+                        const r = s.clip.replay;
+                        if (r && r.end > r.start) {
+                            replayRef.current = true;
+                            v.currentTime = r.start;
+                            v.playbackRate = r.speed;
+                        } else startFreezeOrLoop();
+                    } else if (v.currentTime < s.clip.start - 0.5) v.currentTime = s.clip.start;
+                    // sound effects the playhead just passed
+                    const prev = lastTimeRef.current;
+                    if (v.currentTime > prev && v.currentTime - prev < 0.5) {
+                        for (const fx of s.clip.sfx ?? []) if (fx.t > prev && fx.t <= v.currentTime) playSfx(fx.kind, s.style.sfxVolume ?? 0.8).catch(() => {});
                     }
                 }
+                lastTimeRef.current = v.currentTime;
+                // background music follows the video, quieter while someone talks
+                const m = musicRef.current;
+                if (m && s.music) {
+                    const active = !v.paused;
+                    if (active && m.paused) m.play().catch(() => {});
+                    if (!active && !m.paused) m.pause();
+                    const talking = s.music.duck && s.words.some((w) => v.currentTime >= w.start && v.currentTime < w.end + 0.3);
+                    m.volume = Math.min(1, s.music.volume * (talking ? 0.3 : 1));
+                } else if (m && !m.paused) m.pause();
                 const ctx = c.getContext('2d');
-                if (ctx) drawScene(ctx, v, v.currentTime, { clip: s.clip, style: s.style, brand: s.brand, groups: s.groups, logo: logoRef.current, freezing });
+                if (ctx) {
+                    drawScene(ctx, v, v.currentTime, { clip: s.clip, style: s.style, brand: s.brand, groups: s.groups, logo: logoRef.current, freezing, replaying: replayRef.current });
+                    const sel = selectedStickerRef.current;
+                    const st = sel !== null ? s.clip.stickers?.[sel] : undefined;
+                    if (st && !replayRef.current && freezing === null) {
+                        const b = stickerBox(ctx, st);
+                        ctx.save();
+                        ctx.strokeStyle = '#c8ff3d';
+                        ctx.lineWidth = 3;
+                        ctx.setLineDash([8, 6]);
+                        ctx.strokeRect(b.x - 4, b.y - 4, b.w + 8, b.h + 8);
+                        ctx.restore();
+                    }
+                }
                 setTime(v.currentTime);
             }
             raf = requestAnimationFrame(loop);
@@ -128,6 +183,9 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         setSelection(null);
         history.current = [];
         setHistoryLen(0);
+        future.current = [];
+        setFutureLen(0);
+        replayRef.current = false;
     }, [clip?.id, video?.url]);
 
     // ---------- timeline thumbnails ----------
@@ -164,6 +222,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         };
     }, [clip?.id, video?.url]);
 
+    selectedStickerRef.current = selection?.type === 'sticker' ? selection.i : null;
     if (!clip) return <p className="text-muted">This clip no longer exists.</p>;
 
     // ---------- updates ----------
@@ -172,17 +231,33 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     const editClip = (patch: Partial<Clip>) => {
         history.current = [...history.current.slice(-49), clip];
         setHistoryLen(history.current.length);
+        future.current = [];
+        setFutureLen(0);
         setClip(patch);
+    };
+    const redo = () => {
+        const next = future.current.pop();
+        setFutureLen(future.current.length);
+        if (!next) return;
+        history.current.push(clip);
+        setHistoryLen(history.current.length);
+        onChange({ ...project, clips: project.clips.map((c) => (c.id === clip.id ? next : c)) });
     };
     const undo = () => {
         const prev = history.current.pop();
         setHistoryLen(history.current.length);
+        if (prev) {
+            future.current.push(clip);
+            setFutureLen(future.current.length);
+        }
         if (prev) onChange({ ...project, clips: project.clips.map((c) => (c.id === clip.id ? prev : c)) });
     };
 
     function seek(t: number) {
         const v = videoRef.current;
         freezeRef.current = null;
+        if (replayRef.current && v) v.playbackRate = 1;
+        replayRef.current = false;
         if (v) v.currentTime = Math.max(0, Math.min(project.duration, t));
     }
     function togglePlay() {
@@ -262,7 +337,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         setRenderError('');
         setRendering(0);
         try {
-            const blob = await renderClip({ file: video.file, clip, words, style, brand, quality, videoWidth: project.width, videoHeight: project.height, speakers: project.speakers, onProgress: setRendering });
+            const blob = await renderClip({ file: video.file, clip, words, style, brand, quality, videoWidth: project.width, videoHeight: project.height, speakers: project.speakers, music: project.music, onProgress: setRendering });
             saveBlob(blob, `${safeName(clip.title)}.mp4`);
         } catch (e) {
             setRenderError((e as Error).message);
@@ -312,13 +387,50 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                         className="relative overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl"
                         style={{ width: style.aspect === '16:9' ? 'min(520px, 92vw)' : style.aspect === '1:1' ? 'min(400px, 92vw)' : 'min(300px, 78vw)' }}
                     >
-                        <canvas ref={canvasRef} width={preview.W} height={preview.H} className="block h-auto w-full" onClick={togglePlay} />
+                        <canvas
+                            ref={canvasRef}
+                            width={preview.W}
+                            height={preview.H}
+                            className="block h-auto w-full touch-none"
+                            onPointerDown={(e) => {
+                                const c = canvasRef.current!;
+                                const r = c.getBoundingClientRect();
+                                const px = ((e.clientX - r.left) / r.width) * c.width;
+                                const py = ((e.clientY - r.top) / r.height) * c.height;
+                                const ctx = c.getContext('2d')!;
+                                const list = clip.stickers ?? [];
+                                for (let i = list.length - 1; i >= 0; i--) {
+                                    const st = list[i];
+                                    if (time < st.start || time >= st.end) continue;
+                                    const b = stickerBox(ctx, st);
+                                    if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) {
+                                        selectedStickerRef.current = i;
+                                        setSelection({ type: 'sticker', i });
+                                        stickerDrag.current = { i, dx: px / c.width - st.x, dy: py / c.height - st.y };
+                                        c.setPointerCapture(e.pointerId);
+                                        return;
+                                    }
+                                }
+                                togglePlay();
+                            }}
+                            onPointerMove={(e) => {
+                                const d = stickerDrag.current;
+                                if (!d) return;
+                                const c = canvasRef.current!;
+                                const r = c.getBoundingClientRect();
+                                const x = Math.min(0.97, Math.max(0.03, (e.clientX - r.left) / r.width - d.dx));
+                                const y = Math.min(0.97, Math.max(0.03, (e.clientY - r.top) / r.height - d.dy));
+                                setClip({ stickers: (clip.stickers ?? []).map((st, k) => (k === d.i ? { ...st, x, y } : st)) });
+                            }}
+                            onPointerUp={() => (stickerDrag.current = null)}
+                        />
                         {!playing && video && freezeRef.current === null && (
                             <button className="absolute inset-0 grid place-items-center bg-black/10" onClick={togglePlay} aria-label="Play">
                                 <span className="grid size-14 place-items-center rounded-full bg-white/90 pl-1 text-xl text-ink">▶</span>
                             </button>
                         )}
                         <video ref={videoRef} src={video?.url} playsInline preload="auto" className="pointer-events-none fixed top-0 left-0 size-px opacity-0" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} />
+                        {musicUrl && <audio ref={musicRef} src={musicUrl} loop preload="auto" />}
                     </div>
                     {busy && <p className="text-xs text-muted">{busy}</p>}
                 </section>
@@ -363,6 +475,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 <Toggle label="Auto emoji" hint={clip.emojis.length ? clip.emojis.map((e) => `${e.emoji} ${e.word}`).join('  ') : 'No emoji for this clip'} checked={style.emojis} onChange={(v) => setStyle({ emojis: v })} />
                                 <Toggle label="Animated emoji" hint="Emoji pop in and float" checked={!!style.emojiAnim} onChange={(v) => setStyle({ emojiAnim: v })} />
                                 <FixWords project={project} onChange={onChange} />
+                                <TranslatePanel clip={clip} groups={groups} style={style} setStyle={setStyle} setClip={setClip} />
                                 <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
                                     <p className="text-sm font-semibold">Speaker colours</p>
                                     <p className="text-xs text-muted">Move the playhead to where someone starts talking, then pick who it is. Their captions take that colour until the next change.</p>
@@ -505,6 +618,80 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                     )}
                                 </div>
                                 <Toggle label="Progress bar" hint="A thin bar at the bottom that fills as the clip plays (all clips)" checked={!!style.progressBar} onChange={(v) => setStyle({ progressBar: v })} />
+
+                                <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+                                    <Toggle
+                                        label="Sound effects"
+                                        hint="Booms on laughs, whooshes on zooms. Drag them in the Audio row."
+                                        checked={(clip.sfx?.length ?? 0) > 0}
+                                        onChange={(on) => {
+                                            if (!on) return editClip({ sfx: [] });
+                                            const auto = autoSfx(clip, events);
+                                            editClip({ sfx: auto.length ? auto : [{ t: Math.min(clip.end - 0.5, clip.start + 1), kind: 'whoosh' }] });
+                                        }}
+                                    />
+                                    {(clip.sfx?.length ?? 0) > 0 && (
+                                        <>
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {SFX_KINDS.map((k) => (
+                                                    <button key={k.id} className="tl-btn" title={`Add a ${k.label} at the playhead`} onClick={() => { playSfx(k.id, style.sfxVolume ?? 0.8); editClip({ sfx: [...(clip.sfx ?? []), { t: Math.max(clip.start, Math.min(clip.end, time)), kind: k.id as SfxKind }].sort((a, b) => a.t - b.t) }); }}>
+                                                        {k.icon} + {k.label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <Field label={`Effects volume: ${Math.round((style.sfxVolume ?? 0.8) * 100)}%`}>
+                                                <input type="range" min={0.1} max={1.5} step={0.05} value={style.sfxVolume ?? 0.8} onChange={(e) => setStyle({ sfxVolume: +e.target.value })} className="w-full accent-[var(--color-accent)]" />
+                                            </Field>
+                                        </>
+                                    )}
+                                </div>
+
+                                <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+                                    <Toggle
+                                        label="Instant replay"
+                                        hint="Replays the funniest moment slowed down and zoomed in, after the clip"
+                                        checked={!!clip.replay}
+                                        onChange={(on) => editClip({ replay: on ? autoReplay(clip, events) : undefined })}
+                                    />
+                                    {clip.replay && (
+                                        <>
+                                            <p className="text-xs text-muted">
+                                                Replays {(clip.replay.end - clip.replay.start).toFixed(1)}s ({replayLength(clip).toFixed(1)}s slowed down).
+                                            </p>
+                                            <div className="flex flex-wrap gap-2">
+                                                <button className="tl-btn" onClick={() => editClip({ replay: { ...clip.replay!, start: Math.max(clip.start, time - 2.4), end: Math.min(clip.end, time + 0.4) } })}>
+                                                    Replay the moment at the playhead
+                                                </button>
+                                            </div>
+                                            <Field label={`Speed: ${Math.round(clip.replay.speed * 100)}%`}>
+                                                <input type="range" min={0.5} max={1} step={0.05} value={clip.replay.speed} onChange={(e) => setClip({ replay: { ...clip.replay!, speed: +e.target.value } })} className="w-full accent-[var(--color-accent)]" />
+                                            </Field>
+                                        </>
+                                    )}
+                                </div>
+
+                                <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+                                    <Toggle
+                                        label="Screen shake & flash"
+                                        hint="Shakes the frame on the loudest moments (⚡ in the Effects row)"
+                                        checked={(clip.shakes?.length ?? 0) > 0}
+                                        onChange={(on) => {
+                                            if (!on) return editClip({ shakes: [] });
+                                            const auto = autoShakes(clip, events);
+                                            editClip({ shakes: auto.length ? auto : [{ t: Math.max(clip.start, Math.min(clip.end, time)), kind: 'both' }] });
+                                        }}
+                                    />
+                                    {(clip.shakes?.length ?? 0) > 0 && (
+                                        <div className="flex flex-wrap gap-1.5">
+                                            <button className="tl-btn" onClick={() => editClip({ shakes: [...(clip.shakes ?? []), { t: time, kind: 'shake' as const }].sort((a, b) => a.t - b.t) })}>⚡ + Shake at playhead</button>
+                                            <button className="tl-btn" onClick={() => editClip({ shakes: [...(clip.shakes ?? []), { t: time, kind: 'flash' as const }].sort((a, b) => a.t - b.t) })}>✦ + Flash at playhead</button>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <StickersPanel clip={clip} time={time} selection={selection} setSelection={setSelection} editClip={editClip} setClip={setClip} />
+                                <MusicPanel project={project} onChange={onChange} />
+                                <PresetsPanel project={project} clip={clip} events={events} words={words} onChange={onChange} />
                             </>
                         )}
 
@@ -517,6 +704,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                     <Bar label="Shareable" value={clip.subscores.shareability} />
                                 </div>
                                 <p className="text-sm text-muted">{clip.reason}</p>
+                                <ImprovePanel clip={clip} words={words} setClip={editClip} />
                                 <Field label="Title ideas (click one to use it)">
                                     <div className="flex flex-col gap-1.5">
                                         {titleIdeas(clip).map((t) => (
@@ -592,6 +780,8 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                 onChange={editClip}
                 onUndo={undo}
                 canUndo={historyLen > 0}
+                onRedo={redo}
+                canRedo={futureLen > 0}
                 onRemoveSilences={removeSilences}
                 outputTime={outNow}
                 outputLength={outLen}
@@ -855,5 +1045,330 @@ function Toggle({ label, hint, checked, onChange }: { label: string; hint: strin
             </span>
             <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} className="mt-1 size-5 shrink-0 accent-[var(--color-accent)]" />
         </label>
+    );
+}
+
+// ---------- optional effect panels ----------
+
+function StickersPanel({
+    clip,
+    time,
+    selection,
+    setSelection,
+    editClip,
+    setClip
+}: {
+    clip: Clip;
+    time: number;
+    selection: Selection;
+    setSelection: (s: Selection) => void;
+    editClip: (p: Partial<Clip>) => void;
+    setClip: (p: Partial<Clip>) => void;
+}) {
+    const list = clip.stickers ?? [];
+    const update = (i: number, patch: Partial<NonNullable<Clip['stickers']>[number]>) => setClip({ stickers: list.map((s, k) => (k === i ? { ...s, ...patch } : s)) });
+    return (
+        <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+            <div className="flex items-center justify-between gap-2">
+                <span>
+                    <span className="block text-sm font-semibold">Text stickers</span>
+                    <span className="block text-xs text-muted">Text anywhere on the video. Drag it on the preview to move it.</span>
+                </span>
+                <button
+                    className="tl-btn"
+                    onClick={() => {
+                        const st = { id: `st${Date.now().toString(36)}`, text: '😂 NO WAY', start: Math.max(clip.start, Math.min(time, clip.end - 1)), end: Math.min(clip.end, Math.max(clip.start, time) + 2.5), x: 0.5, y: 0.3, size: 0.07, color: '#ffffff', box: false };
+                        editClip({ stickers: [...list, st] });
+                        setSelection({ type: 'sticker', i: list.length });
+                    }}
+                >
+                    + Add text
+                </button>
+            </div>
+            {list.map((st, i) => (
+                <div key={st.id} className={`flex flex-col gap-2 rounded-lg p-2 ${selection?.type === 'sticker' && selection.i === i ? 'bg-accent/10 ring-1 ring-accent' : 'bg-white/[0.03]'}`} onClick={() => setSelection({ type: 'sticker', i })}>
+                    <div className="flex gap-2">
+                        <input className="input min-w-0 flex-1 !py-1.5 text-sm" value={st.text} onChange={(e) => update(i, { text: e.target.value })} aria-label="Sticker text" />
+                        <input type="color" value={st.color} onChange={(e) => update(i, { color: e.target.value })} className="size-8 cursor-pointer bg-transparent" aria-label="Sticker colour" />
+                        <button className="tl-btn" onClick={(e) => { e.stopPropagation(); editClip({ stickers: list.filter((_, k) => k !== i) }); setSelection(null); }} aria-label="Delete sticker">🗑</button>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-muted">
+                        <span>Size</span>
+                        <input type="range" min={0.03} max={0.16} step={0.005} value={st.size} onChange={(e) => update(i, { size: +e.target.value })} className="flex-1 accent-[var(--color-accent)]" />
+                        <label className="flex items-center gap-1"><input type="checkbox" checked={st.box} onChange={(e) => update(i, { box: e.target.checked })} className="accent-[var(--color-accent)]" /> White box</label>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function MusicPanel({ project, onChange }: { project: Project; onChange: (p: Project) => void }) {
+    const m = project.music;
+    return (
+        <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+            <div className="flex items-center justify-between gap-2">
+                <span>
+                    <span className="block text-sm font-semibold">Background music</span>
+                    <span className="block text-xs text-muted">Use your own music file (all clips in this project). Only use music you have the rights to.</span>
+                </span>
+                <label className="tl-btn cursor-pointer">
+                    {m ? 'Change' : '+ Add music'}
+                    <input
+                        type="file"
+                        accept="audio/*"
+                        className="sr-only"
+                        onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) onChange({ ...project, music: { name: f.name, blob: f, volume: m?.volume ?? 0.25, duck: m?.duck ?? true } });
+                        }}
+                    />
+                </label>
+            </div>
+            {m && (
+                <>
+                    <p className="truncate text-xs">🎵 {m.name}</p>
+                    <div className="flex items-center gap-3 text-xs text-muted">
+                        <span>Volume</span>
+                        <input type="range" min={0.05} max={1} step={0.05} value={m.volume} onChange={(e) => onChange({ ...project, music: { ...m, volume: +e.target.value } })} className="flex-1 accent-[var(--color-accent)]" />
+                        <span className="w-8 tabular-nums">{Math.round(m.volume * 100)}%</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                        <label className="flex items-center gap-2"><input type="checkbox" checked={m.duck} onChange={(e) => onChange({ ...project, music: { ...m, duck: e.target.checked } })} className="accent-[var(--color-accent)]" /> Quieter while people talk</label>
+                        <button className="text-muted hover:text-red-300" onClick={() => onChange({ ...project, music: undefined })}>Remove</button>
+                    </div>
+                </>
+            )}
+        </div>
+    );
+}
+
+type Preset = { name: string; style: StyleSettings; fx: { hookTitle: boolean; freeze: string | null; sfx: boolean; shakes: boolean; replay: boolean; zoomLaughs: boolean; silences: boolean } };
+const PRESET_KEY = 'clipsmith.presets';
+function loadPresets(): Preset[] {
+    try {
+        return JSON.parse(localStorage.getItem(PRESET_KEY) ?? '[]');
+    } catch {
+        return [];
+    }
+}
+function savePresets(p: Preset[]) {
+    try {
+        localStorage.setItem(PRESET_KEY, JSON.stringify(p));
+    } catch {}
+}
+
+/** Effects of the current clip, as switches that can be applied to other clips. */
+function currentFx(clip: Clip): Preset['fx'] {
+    return {
+        hookTitle: !!clip.hookTitle && clip.hookTitle.seconds > 0,
+        freeze: clip.freeze && clip.freeze.seconds > 0 ? clip.freeze.text : null,
+        sfx: (clip.sfx?.length ?? 0) > 0,
+        shakes: (clip.shakes?.length ?? 0) > 0,
+        replay: !!clip.replay,
+        zoomLaughs: (clip.zooms?.length ?? 0) > 0,
+        silences: (clip.cuts?.length ?? 0) > 0
+    };
+}
+
+function applyFx(c: Clip, fx: Preset['fx'], events: ReturnType<typeof autoSfx> extends unknown ? Parameters<typeof autoSfx>[1] : never, words: Word[]): Clip {
+    let n: Clip = { ...c };
+    n.hookTitle = fx.hookTitle ? { text: c.hookTitle?.text || c.title, seconds: c.hookTitle?.seconds || 3 } : c.hookTitle ? { ...c.hookTitle, seconds: 0 } : undefined;
+    n.freeze = fx.freeze !== null ? { seconds: c.freeze?.seconds || 1.5, text: c.freeze?.text || fx.freeze } : undefined;
+    if (fx.zoomLaughs && !(c.zooms?.length)) {
+        const laughs = events.filter((e) => (e.type === 'reaction' || e.type === 'chat') && e.start > c.start + 1 && e.start < c.end);
+        n.zooms = laughs.map((e) => ({ start: Math.max(c.start, e.start - 1.2), end: Math.min(c.end, e.start + 0.8), scale: 1.3 }));
+    }
+    if (fx.silences && !(c.cuts?.length)) n.cuts = mergeSpans(silenceCuts(c, words));
+    n.sfx = fx.sfx ? (c.sfx?.length ? c.sfx : autoSfx(n, events)) : [];
+    n.shakes = fx.shakes ? (c.shakes?.length ? c.shakes : autoShakes(n, events)) : [];
+    n.replay = fx.replay ? c.replay ?? autoReplay(n, events) : undefined;
+    return n;
+}
+
+function PresetsPanel({ project, clip, events, words, onChange }: { project: Project; clip: Clip; events: Parameters<typeof autoSfx>[1]; words: Word[]; onChange: (p: Project) => void }) {
+    const [presets, setPresets] = useState<Preset[]>(() => loadPresets());
+    const [name, setName] = useState('');
+    const [msg, setMsg] = useState('');
+    const flash = (m: string) => {
+        setMsg(m);
+        setTimeout(() => setMsg(''), 2500);
+    };
+    return (
+        <div className="flex flex-col gap-2 rounded-xl border border-accent/30 bg-accent/5 p-3">
+            <p className="text-sm font-semibold">Apply to every clip</p>
+            <button
+                className="tl-btn self-start"
+                onClick={() => {
+                    const fx = currentFx(clip);
+                    onChange({ ...project, clips: project.clips.map((c) => (c.id === clip.id ? c : applyFx(c, fx, events, words))) });
+                    flash(`Applied this clip's effects to ${project.clips.length - 1} other clip${project.clips.length === 2 ? '' : 's'}.`);
+                }}
+            >
+                ✨ Use this clip’s effects on all clips
+            </button>
+            <p className="text-xs text-muted">Copies which effects are switched on (title, freeze, sound effects, shakes, replay, zooms on laughs, jump cuts). Each clip gets its own auto-placed version.</p>
+            <p className="mt-1 text-sm font-semibold">Presets</p>
+            <div className="flex gap-2">
+                <input className="input min-w-0 flex-1 !py-1.5 text-sm" placeholder="Name, e.g. My gaming style" value={name} onChange={(e) => setName(e.target.value)} />
+                <button
+                    className="tl-btn"
+                    disabled={!name.trim()}
+                    onClick={() => {
+                        const next = [...presets.filter((p) => p.name !== name.trim()), { name: name.trim(), style: project.style, fx: currentFx(clip) }];
+                        setPresets(next);
+                        savePresets(next);
+                        setName('');
+                        flash('Preset saved.');
+                    }}
+                >
+                    Save look
+                </button>
+            </div>
+            {presets.map((p) => (
+                <div key={p.name} className="flex items-center gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                    <button
+                        className="tl-btn"
+                        onClick={() => {
+                            onChange({ ...project, style: { ...p.style, facecam: project.style.facecam ?? p.style.facecam }, clips: project.clips.map((c) => applyFx(c, p.fx, events, words)) });
+                            flash(`Applied “${p.name}” to all clips.`);
+                        }}
+                    >
+                        Apply to all clips
+                    </button>
+                    <button
+                        className="text-xs text-muted hover:text-red-300"
+                        onClick={() => {
+                            const next = presets.filter((x) => x.name !== p.name);
+                            setPresets(next);
+                            savePresets(next);
+                        }}
+                    >
+                        Delete
+                    </button>
+                </div>
+            ))}
+            {msg && <p className="text-xs text-accent">{msg}</p>}
+        </div>
+    );
+}
+
+/** Translated captions via a free Claude chat. */
+function TranslatePanel({ clip, groups, style, setStyle, setClip }: { clip: Clip; groups: { text: string; start: number; end: number }[][]; style: StyleSettings; setStyle: (p: Partial<StyleSettings>) => void; setClip: (p: Partial<Clip>) => void }) {
+    const [lang, setLang] = useState(clip.translation?.language ?? 'Spanish');
+    const [answer, setAnswer] = useState('');
+    const [msg, setMsg] = useState('');
+    const [open, setOpen] = useState(!!clip.translation);
+    const times = groups.map((g, i) => ({ start: g[0].start, end: groups[i + 1] ? Math.min(groups[i + 1][0].start, g[g.length - 1].end + 0.6) : g[g.length - 1].end + 0.4 }));
+    const lines = groups.map((g) => g.map((w) => w.text).join(' '));
+    const prompt = `Translate these video captions into ${lang}. Keep the meaning, slang and jokes natural for viewers who speak ${lang}, and keep each line short like the original. There are ${lines.length} lines; reply with ONLY a JSON array of exactly ${lines.length} strings, in the same order.\n\n${lines.map((l, i) => `${i + 1}. ${l}`).join('\n')}`;
+    return (
+        <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+            <button className="flex items-center justify-between text-left" onClick={() => setOpen(!open)}>
+                <span>
+                    <span className="block text-sm font-semibold">Translated captions</span>
+                    <span className="block text-xs text-muted">{clip.translation ? `${clip.translation.language} captions added` : 'Reach viewers in other languages (free, via Claude chat)'}</span>
+                </span>
+                <span className="text-muted">{open ? '▾' : '▸'}</span>
+            </button>
+            {open && (
+                <>
+                    {clip.translation && (
+                        <Segmented value={style.captionLang ?? 'original'} onChange={(v) => setStyle({ captionLang: v as StyleSettings['captionLang'] })} items={[{ id: 'original', label: 'Original' }, { id: 'translated', label: clip.translation.language }, { id: 'both', label: 'Both' }]} />
+                    )}
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <input className="input !w-36 !py-1.5 text-sm" value={lang} onChange={(e) => setLang(e.target.value)} aria-label="Language" />
+                        <button className="tl-btn" onClick={() => navigator.clipboard.writeText(prompt).then(() => setMsg('Prompt copied. Paste it into a new Claude chat.')).catch(() => setMsg('Copying failed.'))}>
+                            1. Copy prompt
+                        </button>
+                        <span className="text-muted">2. Paste into claude.ai · 3. Paste the answer:</span>
+                    </div>
+                    <textarea className="input h-16 font-mono text-xs" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder='["...", "..."]' aria-label="Translated lines" />
+                    <div className="flex gap-2">
+                        <button
+                            className="tl-btn"
+                            disabled={!answer.trim()}
+                            onClick={() => {
+                                try {
+                                    const a = answer.indexOf('[');
+                                    const b = answer.lastIndexOf(']');
+                                    const arr = JSON.parse(answer.slice(a, b + 1)) as unknown[];
+                                    if (!Array.isArray(arr) || !arr.length) throw new Error();
+                                    setClip({ translation: { language: lang, lines: times.map((t, i) => ({ ...t, text: String(arr[i] ?? '') })).filter((l) => l.text.trim()) } });
+                                    setStyle({ captionLang: style.captionLang && style.captionLang !== 'original' ? style.captionLang : 'both' });
+                                    setAnswer('');
+                                    setMsg(arr.length === lines.length ? 'Translation added.' : `Added, but Claude returned ${arr.length} lines for ${lines.length}; check the timing.`);
+                                } catch {
+                                    setMsg('That answer could not be read. Copy Claude’s whole answer including [ and ].');
+                                }
+                            }}
+                        >
+                            Add translation
+                        </button>
+                        {clip.translation && <button className="text-xs text-muted hover:text-red-300" onClick={() => setClip({ translation: undefined })}>Remove</button>}
+                    </div>
+                    {msg && <p className="text-xs text-accent">{msg}</p>}
+                </>
+            )}
+        </div>
+    );
+}
+
+/** Ask a free Claude chat to improve this one clip (trim points, title, hook, hashtags). */
+function ImprovePanel({ clip, words, setClip }: { clip: Clip; words: Word[]; setClip: (p: Partial<Clip>) => void }) {
+    const [answer, setAnswer] = useState('');
+    const [msg, setMsg] = useState('');
+    const ctx = words.filter((w) => w.end > clip.start - 30 && w.start < clip.end + 15);
+    const lines: string[] = [];
+    for (let i = 0; i < ctx.length; i += 10) {
+        const part = ctx.slice(i, i + 10);
+        lines.push(`[${part[0].start.toFixed(1)}] ${part.map((w) => w.text).join(' ')}`);
+    }
+    const prompt = `You are a top short-form video editor. Improve this clip for YouTube Shorts / TikTok so a stranger watches it to the end and laughs or shares it.
+
+Current clip: ${clip.start.toFixed(1)}s to ${clip.end.toFixed(1)}s, title "${clip.title}".
+
+Transcript around it (times in seconds):
+${lines.join('\n')}
+
+Pick the best start and end (start right at the hook or setup, end right after the payoff or laugh), and write a better title, the hook line, a short description, hashtags, 3-6 keywords (single spoken words), 2-4 emoji tied to spoken words, and 3 alternative titles.
+Reply with ONLY a JSON object like:
+{"start":12.3,"end":41.0,"title":"...","hook":"...","description":"...","hashtags":["..."],"keywords":["..."],"emojis":[{"word":"...","emoji":"😂"}],"altTitles":["...","...","..."]}`;
+    return (
+        <div className="flex flex-col gap-2 rounded-xl border border-accent/30 bg-accent/5 p-3">
+            <p className="text-sm font-semibold">Improve this clip with Claude (free)</p>
+            <p className="text-xs text-muted">Better trim points, title, hook and hashtags for just this clip.</p>
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+                <button className="tl-btn" onClick={() => navigator.clipboard.writeText(prompt).then(() => setMsg('Prompt copied. Paste it into a new Claude chat.')).catch(() => setMsg('Copying failed.'))}>1. Copy prompt</button>
+                <span className="text-muted">2. Paste into claude.ai · 3. Paste the answer:</span>
+            </div>
+            <textarea className="input h-16 font-mono text-xs" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder='{"start": 12.3, "end": 41.0, "title": "..."}' aria-label="Claude's suggestion" />
+            <button
+                className="tl-btn self-start"
+                disabled={!answer.trim()}
+                onClick={() => {
+                    try {
+                        const o = JSON.parse(answer.slice(answer.indexOf('{'), answer.lastIndexOf('}') + 1));
+                        const patch: Partial<Clip> = {};
+                        if (typeof o.start === 'number' && typeof o.end === 'number' && o.end - o.start >= 3) {
+                            patch.start = Math.max(0, o.start);
+                            patch.end = o.end;
+                        }
+                        for (const k of ['title', 'hook', 'description'] as const) if (typeof o[k] === 'string') patch[k] = o[k];
+                        for (const k of ['hashtags', 'keywords', 'altTitles'] as const) if (Array.isArray(o[k])) patch[k] = o[k].map(String);
+                        if (Array.isArray(o.emojis)) patch.emojis = o.emojis.filter((e: any) => e?.word && e?.emoji).map((e: any) => ({ word: String(e.word), emoji: String(e.emoji) }));
+                        setClip(patch);
+                        setAnswer('');
+                        setMsg('Clip improved.');
+                    } catch {
+                        setMsg('That answer could not be read. Copy Claude’s whole answer including { and }.');
+                    }
+                }}
+            >
+                Apply
+            </button>
+            {msg && <p className="text-xs text-accent">{msg}</p>}
+        </div>
     );
 }

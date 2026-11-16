@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { findAudioEvents } from '../lib/audio';
+import { projectEvents } from '../lib/audio';
 import { chatPrompt, splitForChat } from '../lib/prompts';
 import { displayWords, groupWords } from '../lib/captions';
 import { drawScene } from '../lib/draw';
 import { outputSize } from '../lib/geometry';
 import { skipCut } from '../lib/timeline';
-import { renderClip } from '../lib/video';
+import { joinVideos, renderCard, renderClip } from '../lib/video';
+import { chatSpikes, parseChat } from '../lib/chat';
+import { textOverlayPng, wrap } from '../lib/draw';
+import { TITLE_FONT } from '../lib/templates';
 import type { Brand, ContentMode, Picker, Project } from '../lib/types';
 import { MODES, PICKERS } from './Home';
 import type { LoadedVideo } from './Studio';
@@ -41,6 +44,8 @@ export default function ProjectView({ project, video, progress, error, brand, on
     const [batchError, setBatchError] = useState('');
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [reel, setReel] = useState(false);
+    const [compile, setCompile] = useState(false);
+    const [chatMsg, setChatMsg] = useState('');
     const busy = !!progress;
 
     const clips = useMemo(() => [...project.clips].sort((a, b) => (sort === 'score' ? b.score - a.score : a.start - b.start)), [project.clips, sort]);
@@ -61,6 +66,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     videoWidth: project.width,
                     videoHeight: project.height,
                     speakers: project.speakers,
+                    music: project.music,
                     onProgress: (ratio) => setBatch({ i, n: clips.length, ratio })
                 });
                 saveBlob(blob, `${String(i + 1).padStart(2, '0')} ${safeName(clips[i].title)}.mp4`);
@@ -131,6 +137,24 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     <button className="btn-ghost" disabled={!video || clips.length === 0} onClick={() => setReel(true)}>
                         ▶ Watch all
                     </button>
+                    <button className="btn-ghost" disabled={!video || clips.length < 2} onClick={() => setCompile(true)} title="Join your best clips into one video">
+                        🎬 Compilation
+                    </button>
+                    <label className="btn-ghost cursor-pointer" title="Add the stream's chat replay to find moments where chat exploded">
+                        💬 {project.chat ? 'Chat added' : 'Add chat'}
+                        <input
+                            type="file"
+                            accept=".json,.txt,.log,application/json,text/plain"
+                            className="sr-only"
+                            onChange={async (e) => {
+                                const f = e.target.files?.[0];
+                                if (!f) return;
+                                const spikes = chatSpikes(parseChat(await f.text()));
+                                onChange({ ...project, chat: { name: f.name, spikes } });
+                                setChatMsg(spikes.length ? `Found ${spikes.length} moments where chat exploded. Click “Find new clips” to use them.` : 'No chat spikes found in that file (is it a Twitch/YouTube chat replay with timestamps?).');
+                            }}
+                        />
+                    </label>
                     <button className="btn-accent !py-2 text-sm" disabled={busy || !video || !!batch || clips.length === 0} onClick={exportAll}>
                         {batch ? `Exporting ${batch.i + 1}/${batch.n} · ${Math.round(batch.ratio * 100)}%` : 'Export all'}
                     </button>
@@ -175,6 +199,8 @@ export default function ProjectView({ project, video, progress, error, brand, on
             )}
 
             {project.status === 'awaiting-paste' && project.transcript && !progress && <PastePanel project={project} onPaste={onPaste} />}
+            {chatMsg && <p className="rounded-lg bg-sky-500/10 px-3 py-2 text-sm text-sky-100">{chatMsg}</p>}
+            {compile && video && <CompilationMaker project={project} clips={clips} video={video} brand={brand} onClose={() => setCompile(false)} />}
             {reel && video && <ReelPreview project={project} clips={clips} video={video} brand={brand} onClose={() => setReel(false)} onOpen={onOpenClip} />}
 
             {(error || batchError) && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{error || batchError}</p>}
@@ -226,7 +252,7 @@ function PastePanel({ project, onPaste }: { project: Project; onPaste: (answer: 
         const t = project.transcript!;
         const o = project.options;
         const opts = { mode: o.mode ?? 'funny', minSeconds: o.minSeconds, maxSeconds: o.maxSeconds, maxClips: o.maxClips, topic: o.topic };
-        const chunks = splitForChat(t.segments, findAudioEvents(t.energy, t.words));
+        const chunks = splitForChat(t.segments, projectEvents(project));
         const perPart = Math.max(2, Math.ceil(o.maxClips / chunks.length) + 1);
         return chunks.map((c, i) => chatPrompt(c.segments, c.events, { ...opts, maxClips: chunks.length > 1 ? perPart : o.maxClips }, { index: i, count: chunks.length }));
     }, [project.transcript, project.options]);
@@ -369,6 +395,108 @@ function ReelPreview({ project, clips, video, brand, onClose, onOpen }: { projec
                 </div>
             </div>
             <video ref={vRef} src={video.url} playsInline className="pointer-events-none fixed top-0 left-0 size-px opacity-0" />
+        </div>
+    );
+}
+
+/** Joins chosen clips into one video, optionally with a countdown card before each. */
+function CompilationMaker({ project, clips, video, brand, onClose }: { project: Project; clips: Project['clips']; video: LoadedVideo; brand: Brand; onClose: () => void }) {
+    const [chosen, setChosen] = useState<string[]>(() => clips.slice(0, Math.min(5, clips.length)).map((c) => c.id));
+    const [countdown, setCountdown] = useState(true);
+    const [quality, setQuality] = useState<720 | 1080>(720);
+    const [busy, setBusy] = useState<string | null>(null);
+    const [err, setErr] = useState('');
+    const picked = clips.filter((c) => chosen.includes(c.id));
+    // countdown: weakest first, best last
+    const order = countdown ? [...picked].sort((a, b) => a.score - b.score) : picked;
+
+    async function make() {
+        setErr('');
+        try {
+            const { W, H } = outputSize(project.style.aspect, quality);
+            const parts: Uint8Array[] = [];
+            for (let i = 0; i < order.length; i++) {
+                const c = order[i];
+                if (countdown) {
+                    setBusy(`Title card ${i + 1} of ${order.length}`);
+                    const num = order.length - i;
+                    const png = await textOverlayPng(W, H, (ctx) => {
+                        const g = ctx.createLinearGradient(0, 0, 0, H);
+                        g.addColorStop(0, '#14171c');
+                        g.addColorStop(1, '#0b0d10');
+                        ctx.fillStyle = g;
+                        ctx.fillRect(0, 0, W, H);
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.fillStyle = project.style.highlight;
+                        ctx.font = `${W * 0.28}px ${TITLE_FONT.css}, sans-serif`;
+                        ctx.fillText(`#${num}`, W / 2, H * 0.4);
+                        ctx.fillStyle = '#ffffff';
+                        const size = W * 0.065;
+                        ctx.font = `${size}px ${TITLE_FONT.css}, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif`;
+                        wrap(ctx, c.title, W * 0.84).slice(0, 3).forEach((l, k) => ctx.fillText(l, W / 2, H * 0.58 + k * size * 1.2));
+                    });
+                    parts.push(await renderCard(png, 1.5, quality, true));
+                }
+                setBusy(`Rendering clip ${i + 1} of ${order.length}`);
+                const blob = await renderClip({
+                    file: video.file,
+                    clip: c,
+                    words: project.transcript?.words ?? [],
+                    style: project.style,
+                    brand,
+                    quality,
+                    videoWidth: project.width,
+                    videoHeight: project.height,
+                    speakers: project.speakers,
+                    music: project.music,
+                    onProgress: (r) => setBusy(`Rendering clip ${i + 1} of ${order.length} · ${Math.round(r * 100)}%`)
+                });
+                parts.push(new Uint8Array(await blob.arrayBuffer()));
+            }
+            setBusy('Joining everything');
+            saveBlob(await joinVideos(parts), `${safeName(project.name)} - compilation.mp4`);
+            onClose();
+        } catch (e) {
+            setErr((e as Error).message);
+        } finally {
+            setBusy(null);
+        }
+    }
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={() => !busy && onClose()}>
+            <div className="panel flex max-h-[90vh] w-full max-w-lg flex-col gap-4 overflow-y-auto p-5" onClick={(e) => e.stopPropagation()}>
+                <div>
+                    <h2 className="text-xl font-bold">Make a compilation</h2>
+                    <p className="text-sm text-muted">Join your best clips into one video, for example a “Top 5 funniest moments”.</p>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                    {clips.map((c) => (
+                        <label key={c.id} className="flex items-center gap-3 rounded-lg bg-white/[0.04] px-3 py-2 text-sm">
+                            <input type="checkbox" checked={chosen.includes(c.id)} onChange={(e) => setChosen(e.target.checked ? [...chosen, c.id] : chosen.filter((x) => x !== c.id))} className="size-4 accent-[var(--color-accent)]" />
+                            <span className={`rounded px-1.5 text-xs font-bold ${scoreTone(c.score)}`}>{c.score}</span>
+                            <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                            <span className="text-xs text-muted tabular-nums">{fmt(c.end - c.start)}</span>
+                        </label>
+                    ))}
+                </div>
+                <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={countdown} onChange={(e) => setCountdown(e.target.checked)} className="size-4 accent-[var(--color-accent)]" />
+                    Countdown with numbered title cards (#{picked.length} … #1, best clip last)
+                </label>
+                <div className="flex gap-2 text-sm">
+                    {([720, 1080] as const).map((q) => (
+                        <button key={q} className={`rounded-lg px-3 py-1.5 ${quality === q ? 'bg-accent text-ink' : 'bg-white/[0.06]'}`} onClick={() => setQuality(q)}>{q}p</button>
+                    ))}
+                </div>
+                {err && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{err}</p>}
+                <div className="flex gap-2">
+                    <button className="btn-accent grow" disabled={picked.length < 2 || !!busy} onClick={make}>{busy ?? `Make video from ${picked.length} clips`}</button>
+                    <button className="btn-ghost" disabled={!!busy} onClick={onClose}>Close</button>
+                </div>
+                <p className="text-xs text-muted">Each clip is exported with its own captions and effects, then everything is joined. This takes about as long as exporting each clip.</p>
+            </div>
         </div>
     );
 }
