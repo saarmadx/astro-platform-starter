@@ -1,452 +1,751 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+// A Premiere-style timeline. Everything is shown in sequence time (the finished video), so a
+// deleted part disappears and the rest closes up. Parts of the video are separate blocks on V1 that
+// can be selected, trimmed, split with the razor and given their own layout.
+import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
+import {
+    Captions,
+    Check,
+    Layers,
+    Magnet,
+    Maximize2,
+    MousePointer2,
+    Music,
+    Pause,
+    Play,
+    Redo2,
+    Scissors,
+    SkipBack,
+    SkipForward,
+    Sparkles,
+    Trash2,
+    Type,
+    Undo2,
+    Video,
+    ZoomIn,
+    ZoomOut,
+    AudioLines,
+    FastForward
+} from 'lucide-react';
 import { groupTimes, type DWord } from '../lib/captions';
 import { replayLength } from '../lib/fx';
 import { SFX_KINDS } from '../lib/sfx';
-import { mergeSpans, pieces, subtractSpan } from '../lib/timeline';
-import type { AudioEvent, Clip, Energy, Span } from '../lib/types';
-import { fmt } from './ui';
+import { keptSegments, newSegId, segmentsOf, toOutput, toOutputClamped, toSource, withSegs } from '../lib/timeline';
+import type { AudioEvent, Clip, Energy, Layout, Seg, Span, StyleSettings } from '../lib/types';
 
 export type Selection =
-    | { type: 'piece' | 'cut' | 'zoom' | 'caption' | 'sfx' | 'shake' | 'sticker'; i: number }
+    | { type: 'segs'; ids: string[] }
+    | { type: 'zoom' | 'caption' | 'sfx' | 'shake' | 'sticker'; i: number }
     | null;
+
+export type TimelineApi = { setPlayhead: (outT: number) => void };
 
 type Props = {
     clip: Clip;
+    style: StyleSettings;
     duration: number;
-    time: number;
     playing: boolean;
     groups: DWord[][];
     energy?: Energy;
     events: AudioEvent[];
     bleeps: Span[];
     thumbs: { t: number; url: string }[];
+    hasMusic: boolean;
     selection: Selection;
     setSelection: (s: Selection) => void;
-    onSeek: (t: number) => void;
+    getOutTime: () => number;
+    onSeekOut: (outT: number) => void;
     onTogglePlay: () => void;
-    onChange: (patch: Partial<Clip>) => void;
+    onPlay: () => void;
+    onPause: () => void;
+    /** call once before a change that should be undoable (e.g. at the start of a drag) */
+    onBeginEdit: () => void;
+    /** apply a change without adding a new undo step */
+    onUpdate: (patch: Partial<Clip>) => void;
     onUndo: () => void;
-    canUndo: boolean;
     onRedo: () => void;
+    canUndo: boolean;
     canRedo: boolean;
-    onRemoveSilences: () => void;
-    outputTime: number;
-    outputLength: number;
 };
 
-const TRACK_H = { ruler: 22, video: 56, captions: 34, text: 26, effects: 30, audio: 34 };
-const LABEL_W = 72;
+export const LAYOUTS: { id: Layout | 'default'; label: string; short: string }[] = [
+    { id: 'default', label: 'Project default', short: 'Default' },
+    { id: 'split', label: 'Facecam + gameplay', short: 'Facecam' },
+    { id: 'auto', label: 'Full screen, follow speaker', short: 'Full' },
+    { id: 'manual', label: 'Full screen, fixed position', short: 'Fixed' },
+    { id: 'fit', label: 'Whole frame + blur', short: 'Fit' }
+];
+const layoutName = (l: Layout) => LAYOUTS.find((x) => x.id === l)?.short ?? l;
 
-export default function Timeline(p: Props) {
+const HEAD_W = 92;
+const PAD = 16;
+const FPS = 30;
+const TRACKS = [
+    { id: 'ruler', h: 30 },
+    { id: 'text', h: 34, label: 'T1', name: 'Titles', icon: Type },
+    { id: 'fx', h: 34, label: 'FX', name: 'Effects', icon: Sparkles },
+    { id: 'video', h: 64, label: 'V1', name: 'Video', icon: Video },
+    { id: 'cc', h: 34, label: 'CC', name: 'Captions', icon: Captions },
+    { id: 'a1', h: 48, label: 'A1', name: 'Audio', icon: AudioLines },
+    { id: 'a2', h: 30, label: 'A2', name: 'SFX', icon: Music }
+] as const;
+const top = (id: string) => {
+    let y = 0;
+    for (const t of TRACKS) {
+        if (t.id === id) return y;
+        y += t.h;
+    }
+    return y;
+};
+const trackH = (id: string) => TRACKS.find((t) => t.id === id)!.h;
+const TOTAL_H = TRACKS.reduce((a, t) => a + t.h, 0);
+
+export function timecode(t: number) {
+    const s = Math.max(0, t);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    const f = Math.floor((s - Math.floor(s)) * FPS);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}:${String(f).padStart(2, '0')}`;
+}
+const snapFrame = (t: number) => Math.round(t * FPS) / FPS;
+
+const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
     const { clip } = p;
     const scrollRef = useRef<HTMLDivElement>(null);
-    const [width, setWidth] = useState(800);
+    const playheadRef = useRef<HTMLDivElement>(null);
+    const timecodeRef = useRef<HTMLSpanElement>(null);
+    const waveRef = useRef<HTMLCanvasElement>(null);
+    const razorLineRef = useRef<HTMLDivElement>(null);
+    const [width, setWidth] = useState(900);
     const [zoom, setZoom] = useState(1);
-    const drag = useRef<null | { kind: string; startX: number; orig: Clip; index?: number }>(null);
+    const [tool, setTool] = useState<'select' | 'razor'>('select');
+    const [snap, setSnap] = useState(true);
+    const [menu, setMenu] = useState<null | { x: number; y: number; segId: string }>(null);
+    const drag = useRef<null | { kind: string; startX: number; orig: Clip; index?: number; segId?: string; moved: boolean }>(null);
+    const outNow = useRef(0);
 
-    // visible window: the clip plus some context either side
-    const winStart = Math.max(0, clip.start - 10);
-    const tail = replayLength(clip) + (clip.freeze?.seconds ?? 0); // replay and freeze play after the clip
-    const winEnd = Math.max(Math.min(p.duration, clip.end + 10), clip.end + tail + 1);
-    const span = Math.max(1, winEnd - winStart);
+    const segs = useMemo(() => segmentsOf(clip), [clip]);
+    const spans = useMemo(() => keptSegments(clip), [clip]);
+    const outLen = spans.reduce((a, s) => a + s.end - s.start, 0);
+    const replay = replayLength(clip);
+    const freeze = clip.freeze && clip.freeze.seconds > 0 ? clip.freeze.seconds : 0;
+    const seqLen = outLen + replay + freeze;
 
     useEffect(() => {
         const el = scrollRef.current;
         if (!el) return;
-        const ro = new ResizeObserver(() => setWidth(el.clientWidth - LABEL_W));
+        const ro = new ResizeObserver(() => setWidth(el.clientWidth - HEAD_W));
         ro.observe(el);
         return () => ro.disconnect();
     }, []);
 
-    const pps = (Math.max(200, width) / span) * zoom; // pixels per second
-    const X = (t: number) => (t - winStart) * pps;
-    const T = (x: number) => winStart + x / pps;
-    const total = span * pps;
+    const fitPps = Math.max(20, (Math.max(300, width) - PAD * 2) / Math.max(4, seqLen + 0.5));
+    const pps = fitPps * zoom;
+    const X = useCallback((outT: number) => PAD + outT * pps, [pps]);
+    const contentW = PAD * 2 + Math.max(seqLen + 2, 4) * pps;
+    const outOf = (src: number) => toOutputClamped(clip, src, spans);
+    const srcOf = (out: number) => toSource(clip, out, spans);
+    const segOut = useMemo(() => {
+        let acc = 0;
+        return segs.map((s) => {
+            const r = { seg: s, start: acc, end: acc + (s.end - s.start) };
+            acc = r.end;
+            return r;
+        });
+    }, [segs]);
 
-    // keep the playhead in view while playing
+    // playhead and timecode move every frame without re-rendering React
+    useImperativeHandle(ref, () => ({
+        setPlayhead(outT: number) {
+            outNow.current = outT;
+            if (playheadRef.current) playheadRef.current.style.transform = `translateX(${X(outT)}px)`;
+            if (timecodeRef.current) timecodeRef.current.textContent = timecode(outT);
+            const el = scrollRef.current;
+            if (el && p.playing) {
+                const x = X(outT);
+                if (x < el.scrollLeft || x > el.scrollLeft + el.clientWidth - HEAD_W - 40) el.scrollLeft = Math.max(0, x - 80);
+            }
+        }
+    }));
     useEffect(() => {
-        const el = scrollRef.current;
-        if (!el || !p.playing) return;
-        const x = X(p.time) + LABEL_W;
-        if (x < el.scrollLeft + LABEL_W || x > el.scrollLeft + el.clientWidth - 40) el.scrollLeft = x - LABEL_W - 60;
-    }, [p.time, p.playing]);
+        if (playheadRef.current) playheadRef.current.style.transform = `translateX(${X(outNow.current)}px)`;
+    }, [X]);
 
-    const ps = useMemo(() => pieces(clip), [clip.start, clip.end, clip.splits, clip.cuts]);
-    const cuts = clip.cuts ?? [];
-    const zooms = clip.zooms ?? [];
-    const capTimes = useMemo(() => groupTimes(p.groups), [p.groups]);
+    // ---------- editing ----------
+    const selectedIds = p.selection?.type === 'segs' ? p.selection.ids : [];
+    const commitSegs = (next: Seg[], begin = true) => {
+        if (begin) p.onBeginEdit();
+        p.onUpdate(withSegs(clip, next));
+    };
 
-    // ---------- actions ----------
-    function split() {
-        if (p.time <= clip.start + 0.1 || p.time >= clip.end - 0.1) return;
-        p.onChange({ splits: [...(clip.splits ?? []), p.time].sort((a, b) => a - b) });
+    function splitAt(outT: number) {
+        const t = snapFrame(outT);
+        const hit = segOut.find((r) => t > r.start + 0.05 && t < r.end - 0.05);
+        if (!hit) return;
+        const at = hit.seg.start + (t - hit.start);
+        const next = segs.flatMap((s) => (s.id === hit.seg.id ? [{ ...s, end: at }, { ...s, id: newSegId(), start: at }] : [s]));
+        commitSegs(next);
     }
+
+    function rippleDelete(ids: string[]) {
+        const next = segs.filter((s) => !ids.includes(s.id));
+        if (!next.length) return; // never delete everything
+        commitSegs(next);
+        p.setSelection(null);
+    }
+
+    function setLayout(ids: string[], layout: Layout | 'default') {
+        commitSegs(segs.map((s) => (ids.includes(s.id) ? { ...s, layout: layout === 'default' ? undefined : layout } : s)));
+    }
+
     function deleteSelection() {
         const s = p.selection;
         if (!s) return;
-        if (s.type === 'piece') {
-            const pc = ps[s.i];
-            if (!pc) return;
-            const kept = ps.filter((x, i) => i !== s.i && !x.cut).length;
-            if (!pc.cut && kept === 0) return; // never cut everything
-            p.onChange({ cuts: pc.cut ? subtractSpan(cuts, pc) : mergeSpans([...cuts, { start: pc.start, end: pc.end }]) });
-        } else if (s.type === 'cut') p.onChange({ cuts: cuts.filter((_, i) => i !== s.i) });
-        else if (s.type === 'zoom') p.onChange({ zooms: zooms.filter((_, i) => i !== s.i) });
-        else if (s.type === 'sfx') p.onChange({ sfx: (clip.sfx ?? []).filter((_, i) => i !== s.i) });
-        else if (s.type === 'shake') p.onChange({ shakes: (clip.shakes ?? []).filter((_, i) => i !== s.i) });
-        else if (s.type === 'sticker') p.onChange({ stickers: (clip.stickers ?? []).filter((_, i) => i !== s.i) });
+        if (s.type === 'segs') return rippleDelete(s.ids);
+        p.onBeginEdit();
+        if (s.type === 'zoom') p.onUpdate({ zooms: (clip.zooms ?? []).filter((_, i) => i !== s.i) });
+        else if (s.type === 'sfx') p.onUpdate({ sfx: (clip.sfx ?? []).filter((_, i) => i !== s.i) });
+        else if (s.type === 'shake') p.onUpdate({ shakes: (clip.shakes ?? []).filter((_, i) => i !== s.i) });
+        else if (s.type === 'sticker') p.onUpdate({ stickers: (clip.stickers ?? []).filter((_, i) => i !== s.i) });
         p.setSelection(null);
     }
-    function addZoom() {
-        const start = Math.max(clip.start, Math.min(p.time, clip.end - 0.5));
-        const z = { start, end: Math.min(clip.end, start + 1.5), scale: 1.25 };
-        p.onChange({ zooms: [...zooms, z].sort((a, b) => a.start - b.start) });
-        p.setSelection({ type: 'zoom', i: [...zooms, z].sort((a, b) => a.start - b.start).indexOf(z) });
+
+    function addZoomAtPlayhead() {
+        const start = srcOf(outNow.current);
+        const z = { start, end: srcOf(Math.min(outLen, outNow.current + 1.5)), scale: 1.25 };
+        const list = [...(clip.zooms ?? []), z].sort((a, b) => a.start - b.start);
+        p.onBeginEdit();
+        p.onUpdate({ zooms: list });
+        p.setSelection({ type: 'zoom', i: list.indexOf(z) });
     }
 
-    // keyboard shortcuts
-    const keyRef = useRef({ split, deleteSelection, addZoom, ...p });
-    keyRef.current = { split, deleteSelection, addZoom, ...p };
+    const editPoints = useMemo(() => [0, ...segOut.map((r) => r.end), seqLen], [segOut, seqLen]);
+    const fit = () => {
+        setZoom(1);
+        if (scrollRef.current) scrollRef.current.scrollLeft = 0;
+    };
+
+    // ---------- keyboard (Premiere-style) ----------
+    const keys = useRef({ splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen });
+    keys.current = { splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen };
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             const tag = (e.target as HTMLElement)?.tagName;
             if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-            const k = keyRef.current;
+            const k = keys.current;
+            const ctrl = e.ctrlKey || e.metaKey;
+            const now = outNow.current;
+            const key = e.key.toLowerCase();
             if (e.key === ' ') {
                 e.preventDefault();
-                k.onTogglePlay();
-            } else if (e.key === 's' || e.key === 'S') k.split();
-            else if (e.key === 'Delete' || e.key === 'Backspace') {
+                k.p.onTogglePlay();
+            } else if (key === 'k' && ctrl) {
+                e.preventDefault();
+                k.splitAt(now);
+            } else if (key === 'k') k.p.onPause();
+            else if (key === 'l') k.p.onPlay();
+            else if (key === 'j') {
+                k.p.onPause();
+                k.p.onSeekOut(Math.max(0, now - 1));
+            } else if (key === 'v' && !ctrl) setTool('select');
+            else if (key === 'c' && !ctrl) setTool('razor');
+            else if (key === 's' && !ctrl) setSnap((x) => !x);
+            else if (key === 'z' && !ctrl) k.addZoomAtPlayhead();
+            else if ((key === 'y' && ctrl) || (key === 'z' && ctrl && e.shiftKey)) {
+                e.preventDefault();
+                k.p.onRedo();
+            } else if (key === 'z' && ctrl) {
+                e.preventDefault();
+                k.p.onUndo();
+            } else if (e.key === 'Delete' || e.key === 'Backspace') {
                 e.preventDefault();
                 k.deleteSelection();
-            } else if (e.key === 'z' && !(e.ctrlKey || e.metaKey)) k.addZoom();
-            else if ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey)) {
+            } else if (e.key === 'Escape') {
+                k.p.setSelection(null);
+                setMenu(null);
+            } else if (e.key === 'ArrowLeft') {
                 e.preventDefault();
-                k.onUndo();
-            } else if (e.key === 'ArrowLeft') k.onSeek(k.time - (e.shiftKey ? 1 : 0.1));
-            else if (e.key === 'ArrowRight') k.onSeek(k.time + (e.shiftKey ? 1 : 0.1));
+                k.p.onSeekOut(Math.max(0, now - (e.shiftKey ? 1 : 1 / FPS)));
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                k.p.onSeekOut(now + (e.shiftKey ? 1 : 1 / FPS));
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                const prev = [...k.editPoints].reverse().find((x) => x < now - 0.02);
+                k.p.onSeekOut(prev ?? 0);
+            } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                const next = k.editPoints.find((x) => x > now + 0.02);
+                if (next !== undefined) k.p.onSeekOut(Math.min(next, k.outLen - 0.01));
+            } else if (e.key === 'Home') k.p.onSeekOut(0);
+            else if (e.key === 'End') k.p.onSeekOut(Math.max(0, k.outLen - 0.05));
+            else if (e.key === '=' || e.key === '+') setZoom((z) => Math.min(40, z * 1.25));
+            else if (e.key === '-') setZoom((z) => Math.max(1, z / 1.25));
+            else if (e.key === '\\') k.fit();
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, []);
 
-    // ---------- dragging ----------
-    function startDrag(e: React.PointerEvent, kind: string, index?: number) {
+    // ---------- pointer handling ----------
+    const xToOut = (clientX: number) => {
+        const el = scrollRef.current!;
+        const r = el.getBoundingClientRect();
+        return (clientX - r.left + el.scrollLeft - HEAD_W - PAD) / pps;
+    };
+    /** snap a sequence time to the playhead and edit points */
+    const snapOut = (t: number) => {
+        if (!snap) return t;
+        const cands = [outNow.current, ...editPoints];
+        let best = t;
+        let dist = 8 / pps;
+        for (const c of cands)
+            if (Math.abs(c - t) < dist) {
+                dist = Math.abs(c - t);
+                best = c;
+            }
+        return best;
+    };
+
+    function startDrag(e: React.PointerEvent, kind: string, extra: { index?: number; segId?: string } = {}) {
         e.stopPropagation();
+        if (e.button !== 0) return;
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-        drag.current = { kind, startX: e.clientX, orig: clip, index };
+        drag.current = { kind, startX: e.clientX, orig: clip, moved: false, ...extra };
     }
-    function onDragMove(e: React.PointerEvent) {
+
+    function onPointerMove(e: React.PointerEvent) {
+        if (tool === 'razor' && razorLineRef.current) {
+            const t = Math.max(0, Math.min(outLen, snapOut(xToOut(e.clientX))));
+            razorLineRef.current.style.transform = `translateX(${X(t)}px)`;
+            razorLineRef.current.style.opacity = '1';
+        }
         const d = drag.current;
         if (!d) return;
-        const dt = (e.clientX - d.startX) / pps;
+        const dx = e.clientX - d.startX;
+        if (!d.moved) {
+            if (Math.abs(dx) < 3 && d.kind !== 'scrub') return;
+            d.moved = true;
+            if (d.kind !== 'scrub') p.onBeginEdit();
+        }
         const o = d.orig;
-        const snap = (t: number) => Math.round(t * 20) / 20;
-        if (d.kind === 'trim-start') p.onChange({ start: snap(Math.max(0, Math.min(o.start + dt, o.end - 1))) });
-        else if (d.kind === 'trim-end') p.onChange({ end: snap(Math.min(p.duration, Math.max(o.end + dt, o.start + 1))) });
-        else if (d.kind.startsWith('zoom') && d.index !== undefined) {
+        const oSpans = keptSegments(o);
+        const dt = dx / pps;
+        const toSrc = (out: number) => toSource(o, out, oSpans);
+        const toOut = (src: number) => toOutputClamped(o, src, oSpans);
+
+        if (d.kind === 'scrub') return p.onSeekOut(Math.max(0, Math.min(seqLen, xToOut(e.clientX))));
+
+        if ((d.kind === 'trim-l' || d.kind === 'trim-r') && d.segId) {
+            const list = segmentsOf(o);
+            const i = list.findIndex((s) => s.id === d.segId);
+            const s = list[i];
+            if (!s) return;
+            const prev = list[i - 1];
+            const next = list[i + 1];
+            if (d.kind === 'trim-l') {
+                // the edit point moves on screen; snapping is done in sequence time
+                const segStartOut = toOut(s.start);
+                const want = snapOut(segStartOut + dt) - segStartOut;
+                const ns = Math.max(prev ? prev.end : 0, Math.min(s.end - 0.2, s.start + want));
+                list[i] = { ...s, start: snapFrame(ns) };
+            } else {
+                const segEndOut = toOut(s.end);
+                const want = snapOut(segEndOut + dt) - segEndOut;
+                const ne = Math.min(next ? next.start : p.duration, Math.max(s.start + 0.2, s.end + want));
+                list[i] = { ...s, end: snapFrame(ne) };
+            }
+            p.onUpdate(withSegs(o, list));
+            return;
+        }
+
+        const moveSpan = (start: number, end: number, mode: string) => {
+            const a = toOut(start);
+            const b = toOut(end);
+            let na = a;
+            let nb = b;
+            if (mode === 'move') {
+                na = Math.max(0, Math.min(outLen - (b - a), snapOut(a + dt)));
+                nb = na + (b - a);
+            } else if (mode === 'l') na = Math.max(0, Math.min(b - 0.2, snapOut(a + dt)));
+            else nb = Math.min(outLen, Math.max(a + 0.2, snapOut(b + dt)));
+            return { start: toSrc(na), end: toSrc(nb) };
+        };
+        if (d.kind.startsWith('zoom-') && d.index !== undefined) {
             const z = (o.zooms ?? [])[d.index];
             if (!z) return;
-            let { start, end } = z;
-            if (d.kind === 'zoom-move') {
-                const len = end - start;
-                start = Math.max(o.start, Math.min(o.end - len, start + dt));
-                end = start + len;
-            } else if (d.kind === 'zoom-l') start = Math.max(o.start, Math.min(end - 0.2, start + dt));
-            else end = Math.min(o.end, Math.max(start + 0.2, end + dt));
-            const next = [...(o.zooms ?? [])];
-            next[d.index] = { ...z, start: snap(start), end: snap(end) };
-            p.onChange({ zooms: next });
-        } else if (d.kind.startsWith('sticker') && d.index !== undefined) {
+            const list = [...(o.zooms ?? [])];
+            list[d.index] = { ...z, ...moveSpan(z.start, z.end, d.kind.slice(5)) };
+            p.onUpdate({ zooms: list });
+        } else if (d.kind.startsWith('sticker-') && d.index !== undefined) {
             const st = (o.stickers ?? [])[d.index];
             if (!st) return;
-            let { start, end } = st;
-            if (d.kind === 'sticker-move') {
-                const len = end - start;
-                start = Math.max(o.start, Math.min(o.end - len, start + dt));
-                end = start + len;
-            } else if (d.kind === 'sticker-l') start = Math.max(o.start, Math.min(end - 0.2, start + dt));
-            else end = Math.min(o.end, Math.max(start + 0.2, end + dt));
-            const next = [...(o.stickers ?? [])];
-            next[d.index] = { ...st, start: snap(start), end: snap(end) };
-            p.onChange({ stickers: next });
-        } else if (d.kind === 'sfx-move' && d.index !== undefined) {
-            const next = [...(o.sfx ?? [])];
-            next[d.index] = { ...next[d.index], t: snap(Math.max(o.start, Math.min(o.end, next[d.index].t + dt))) };
-            p.onChange({ sfx: next });
-        } else if (d.kind === 'shake-move' && d.index !== undefined) {
-            const next = [...(o.shakes ?? [])];
-            next[d.index] = { ...next[d.index], t: snap(Math.max(o.start, Math.min(o.end, next[d.index].t + dt))) };
-            p.onChange({ shakes: next });
-        } else if (d.kind === 'title' && o.hookTitle) p.onChange({ hookTitle: { ...o.hookTitle, seconds: Math.max(0.5, Math.min(15, snap(o.hookTitle.seconds + dt))) } });
-        else if (d.kind === 'freeze' && o.freeze) p.onChange({ freeze: { ...o.freeze, seconds: Math.max(0.5, Math.min(6, snap(o.freeze.seconds + dt))) } });
-        else if (d.kind === 'scrub') {
-            const rect = scrollRef.current!.getBoundingClientRect();
-            p.onSeek(T(e.clientX - rect.left + scrollRef.current!.scrollLeft - LABEL_W));
+            const list = [...(o.stickers ?? [])];
+            list[d.index] = { ...st, ...moveSpan(st.start, st.end, d.kind.slice(8)) };
+            p.onUpdate({ stickers: list });
+        } else if (d.kind === 'sfx' && d.index !== undefined) {
+            const list = [...(o.sfx ?? [])];
+            list[d.index] = { ...list[d.index], t: toSrc(Math.max(0, Math.min(outLen, snapOut(toOut(list[d.index].t) + dt)))) };
+            p.onUpdate({ sfx: list });
+        } else if (d.kind === 'shake' && d.index !== undefined) {
+            const list = [...(o.shakes ?? [])];
+            list[d.index] = { ...list[d.index], t: toSrc(Math.max(0, Math.min(outLen, snapOut(toOut(list[d.index].t) + dt)))) };
+            p.onUpdate({ shakes: list });
+        } else if (d.kind === 'title' && o.hookTitle) {
+            p.onUpdate({ hookTitle: { ...o.hookTitle, seconds: Math.max(0.5, Math.min(15, snapFrame(o.hookTitle.seconds + dt))) } });
+        } else if (d.kind === 'freeze' && o.freeze) {
+            p.onUpdate({ freeze: { ...o.freeze, seconds: Math.max(0.5, Math.min(6, snapFrame(o.freeze.seconds + dt))) } });
         }
     }
-    function endDrag() {
+
+    function onPointerUp() {
         drag.current = null;
     }
 
-    function seekFromEvent(e: React.MouseEvent) {
-        const rect = scrollRef.current!.getBoundingClientRect();
-        p.onSeek(T(e.clientX - rect.left + scrollRef.current!.scrollLeft - LABEL_W));
+    function clickSeg(e: React.MouseEvent, id: string) {
+        e.stopPropagation();
+        setMenu(null);
+        if (tool === 'razor') return splitAt(snapOut(xToOut(e.clientX)));
+        if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            const ids = selectedIds.includes(id) ? selectedIds.filter((x) => x !== id) : [...selectedIds, id];
+            p.setSelection(ids.length ? { type: 'segs', ids } : null);
+        } else p.setSelection({ type: 'segs', ids: [id] });
     }
 
-    // ruler ticks
-    const step = pps > 120 ? 1 : pps > 40 ? 5 : pps > 12 ? 10 : 30;
-    const ticks: number[] = [];
-    for (let t = Math.ceil(winStart / step) * step; t <= winEnd; t += step) ticks.push(t);
-
-    // audio waveform bars from loudness
-    const bars = useMemo(() => {
-        if (!p.energy) return [];
-        const out: { t: number; v: number }[] = [];
-        const stepT = Math.max(p.energy.step, 2 / pps);
-        for (let t = winStart; t < winEnd; t += stepT) {
-            const i = Math.floor(t / p.energy.step);
-            const db = p.energy.db[i] ?? -90;
-            out.push({ t, v: Math.max(0, Math.min(1, (db + 55) / 45)) });
+    // ---------- waveform (drawn on a canvas, fast even for long clips) ----------
+    useEffect(() => {
+        const c = waveRef.current;
+        if (!c) return;
+        const w = Math.ceil(Math.min(contentW, 16000));
+        const h = trackH('a1') - 10;
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d')!;
+        ctx.clearRect(0, 0, w, h);
+        if (!p.energy) return;
+        ctx.fillStyle = 'rgba(110, 231, 183, 0.75)';
+        for (let x = PAD; x < Math.min(w, X(outLen)); x += 2) {
+            const src = srcOf((x - PAD) / pps);
+            const db = p.energy.db[Math.floor(src / p.energy.step)] ?? -90;
+            const v = Math.max(0, Math.min(1, (db + 55) / 45));
+            const bh = Math.max(1, v * h);
+            ctx.fillRect(x, (h - bh) / 2, 1.4, bh);
         }
-        return out;
-    }, [p.energy, winStart, winEnd, pps]);
+    }, [p.energy, pps, clip, contentW]);
 
+    // ruler ticks
+    const minorEvery = pps > 160 ? 1 / FPS * 5 : pps > 60 ? 0.5 : pps > 25 ? 1 : pps > 10 ? 2 : 5;
+    const majorEvery = pps > 160 ? 1 : pps > 60 ? 2 : pps > 25 ? 5 : pps > 10 ? 10 : 30;
+    const ticks: { t: number; major: boolean }[] = [];
+    for (let t = 0; t <= seqLen + 2; t += minorEvery) ticks.push({ t: Math.round(t * 1000) / 1000, major: Math.abs(t / majorEvery - Math.round(t / majorEvery)) < 1e-6 });
+
+    const capTimes = useMemo(() => groupTimes(p.groups), [p.groups]);
     const sel = p.selection;
-    const selectedPiece = sel?.type === 'piece' ? ps[sel.i] : null;
+    const selSegs = segs.filter((s) => selectedIds.includes(s.id));
+    const selLayout: Layout | 'default' | 'mixed' = selSegs.length ? (selSegs.every((s) => s.layout === selSegs[0].layout) ? selSegs[0].layout ?? 'default' : 'mixed') : 'default';
+    const visible = (src: number) => toOutput(clip, src, spans) !== null;
 
     return (
-        <div className="panel flex flex-col overflow-hidden select-none">
+        <div className="tl-root select-none" onPointerDown={() => menu && setMenu(null)}>
             {/* toolbar */}
-            <div className="flex flex-wrap items-center gap-2 border-b border-white/10 px-3 py-2 text-sm">
-                <button className="tl-btn !w-10" onClick={p.onTogglePlay} aria-label={p.playing ? 'Pause' : 'Play'} title="Play / pause (Space)">
-                    {p.playing ? '❚❚' : '▶'}
-                </button>
-                <span className="w-28 font-mono text-xs tabular-nums text-muted">
-                    {fmt(p.outputTime)}.{String(Math.floor((p.outputTime % 1) * 10))} / {fmt(p.outputLength)}
-                </span>
-                <span className="mx-1 h-5 w-px bg-white/10" />
-                <button className="tl-btn" onClick={split} title="Split at playhead (S)">✂ Split</button>
-                <button className="tl-btn" onClick={deleteSelection} disabled={!sel || sel.type === 'caption'} title="Delete or restore the selected part (Delete)">
-                    {selectedPiece?.cut || sel?.type === 'cut' ? '↺ Restore' : '🗑 Delete'}
-                </button>
-                <button className="tl-btn" onClick={addZoom} title="Add a punch-in zoom at the playhead (Z)">🔍 Zoom</button>
-                <button className="tl-btn" onClick={p.onRemoveSilences} title="Cut out pauses between words">⏩ Remove silences</button>
-                <button className="tl-btn" onClick={p.onUndo} disabled={!p.canUndo} title="Undo (Ctrl+Z)">↶ Undo</button>
-                <button className="tl-btn" onClick={p.onRedo} disabled={!p.canRedo} title="Redo (Ctrl+Y)">↷ Redo</button>
-                <span className="ml-auto flex items-center gap-2 text-xs text-muted">
-                    Zoom
-                    <input type="range" min={1} max={12} step={0.5} value={zoom} onChange={(e) => setZoom(+e.target.value)} className="w-24 accent-[var(--color-accent)]" aria-label="Timeline zoom" />
-                </span>
+            <div className="tl-toolbar">
+                <div className="flex items-center gap-1">
+                    <button className="tl-icon" onClick={() => p.onSeekOut(0)} title="Go to start (Home)"><SkipBack size={15} /></button>
+                    <button className="tl-icon tl-play" onClick={p.onTogglePlay} title="Play / pause (Space)">{p.playing ? <Pause size={16} /> : <Play size={16} />}</button>
+                    <button className="tl-icon" onClick={() => p.onSeekOut(Math.max(0, outLen - 0.05))} title="Go to end (End)"><SkipForward size={15} /></button>
+                    <span className="tl-timecode">
+                        <span ref={timecodeRef}>00:00:00:00</span>
+                        <span className="text-white/35"> / {timecode(seqLen)}</span>
+                    </span>
+                </div>
+                <div className="tl-sep" />
+                <div className="tl-group" role="radiogroup" aria-label="Tool">
+                    <button className={`tl-icon ${tool === 'select' ? 'tl-on' : ''}`} onClick={() => setTool('select')} title="Selection tool (V)"><MousePointer2 size={15} /></button>
+                    <button className={`tl-icon ${tool === 'razor' ? 'tl-on' : ''}`} onClick={() => setTool('razor')} title="Razor tool (C): click a part to cut it"><Scissors size={15} /></button>
+                </div>
+                <button className="tl-btn" onClick={() => splitAt(outNow.current)} title="Split at playhead (Ctrl+K)"><Scissors size={14} /> Split</button>
+                <button className="tl-btn" onClick={deleteSelection} disabled={!sel || sel.type === 'caption'} title="Delete the selection; the gap closes (Delete)"><Trash2 size={14} /> Delete</button>
+                <button className="tl-btn" onClick={addZoomAtPlayhead} title="Add a punch-in zoom at the playhead (Z)"><ZoomIn size={14} /> Zoom</button>
+                <div className="tl-sep" />
+                <button className="tl-icon" onClick={p.onUndo} disabled={!p.canUndo} title="Undo (Ctrl+Z)"><Undo2 size={15} /></button>
+                <button className="tl-icon" onClick={p.onRedo} disabled={!p.canRedo} title="Redo (Ctrl+Shift+Z)"><Redo2 size={15} /></button>
+                {selSegs.length > 0 && (
+                    <>
+                        <div className="tl-sep" />
+                        <label className="flex items-center gap-2 text-xs text-white/60">
+                            <Layers size={14} />
+                            {selSegs.length > 1 ? `${selSegs.length} parts` : 'Part'} layout
+                            <select className="tl-select" value={selLayout === 'mixed' ? '' : selLayout} onChange={(e) => setLayout(selectedIds, e.target.value as Layout | 'default')} aria-label="Layout for the selected part">
+                                {selLayout === 'mixed' && <option value="">Mixed</option>}
+                                {LAYOUTS.map((l) => (
+                                    <option key={l.id} value={l.id}>{l.label}</option>
+                                ))}
+                            </select>
+                        </label>
+                    </>
+                )}
+                <div className="ml-auto flex items-center gap-1">
+                    <button className={`tl-icon ${snap ? 'tl-on' : ''}`} onClick={() => setSnap(!snap)} title="Snapping (S)"><Magnet size={15} /></button>
+                    <div className="tl-sep" />
+                    <button className="tl-icon" onClick={() => setZoom((z) => Math.max(1, z / 1.4))} title="Zoom out (-)"><ZoomOut size={15} /></button>
+                    <input type="range" min={0} max={1} step={0.001} value={Math.log(zoom) / Math.log(40)} onChange={(e) => setZoom(Math.pow(40, +e.target.value))} className="tl-range" aria-label="Timeline zoom" />
+                    <button className="tl-icon" onClick={() => setZoom((z) => Math.min(40, z * 1.4))} title="Zoom in (+)"><ZoomIn size={15} /></button>
+                    <button className="tl-icon" onClick={fit} title="Fit to window (\)"><Maximize2 size={14} /></button>
+                </div>
             </div>
 
             {/* tracks */}
-            <div ref={scrollRef} className="relative overflow-x-auto" onPointerMove={onDragMove} onPointerUp={endDrag}>
-                <div className="relative" style={{ width: total + LABEL_W }}>
-                    {/* labels */}
-                    <div className="sticky left-0 z-20 float-left flex flex-col bg-surface text-[11px] font-semibold text-muted" style={{ width: LABEL_W }}>
-                        <div style={{ height: TRACK_H.ruler }} />
-                        <div className="flex items-center px-2" style={{ height: TRACK_H.video }}>Video</div>
-                        <div className="flex items-center px-2" style={{ height: TRACK_H.captions }}>Captions</div>
-                        <div className="flex items-center px-2" style={{ height: TRACK_H.text }}>Text</div>
-                        <div className="flex items-center px-2" style={{ height: TRACK_H.effects }}>Effects</div>
-                        <div className="flex items-center px-2" style={{ height: TRACK_H.audio }}>Audio</div>
+            <div
+                ref={scrollRef}
+                className={`tl-scroll ${tool === 'razor' ? 'tl-razor' : ''}`}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onPointerLeave={() => razorLineRef.current && (razorLineRef.current.style.opacity = '0')}
+                onWheel={(e) => {
+                    const el = scrollRef.current!;
+                    if (e.ctrlKey || e.metaKey) {
+                        // zoom around the mouse
+                        const at = xToOut(e.clientX);
+                        const nz = Math.max(1, Math.min(40, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+                        setZoom(nz);
+                        requestAnimationFrame(() => {
+                            const r = el.getBoundingClientRect();
+                            el.scrollLeft = PAD + at * fitPps * nz - (e.clientX - r.left - HEAD_W);
+                        });
+                    } else if (!e.shiftKey && Math.abs(e.deltaY) > Math.abs(e.deltaX)) el.scrollLeft += e.deltaY;
+                }}
+            >
+                <div className="relative flex" style={{ width: contentW + HEAD_W, height: TOTAL_H }}>
+                    {/* track headers */}
+                    <div className="tl-heads" style={{ width: HEAD_W }}>
+                        {TRACKS.map((t) =>
+                            t.id === 'ruler' ? (
+                                <div key={t.id} style={{ height: t.h }} className="border-b border-white/10" />
+                            ) : (
+                                <div key={t.id} className="tl-head" style={{ height: t.h }}>
+                                    <span className="tl-tag">{t.label}</span>
+                                    <span className="truncate">{t.name}</span>
+                                </div>
+                            )
+                        )}
                     </div>
 
-                    <div className="relative" style={{ marginLeft: LABEL_W, width: total }}>
+                    <div
+                        className="relative"
+                        style={{ width: contentW, height: TOTAL_H }}
+                        onPointerDown={(e) => {
+                            if (e.button !== 0) return;
+                            p.setSelection(null);
+                            p.onSeekOut(Math.max(0, Math.min(seqLen, xToOut(e.clientX))));
+                        }}
+                    >
+                        {/* track lanes */}
+                        {TRACKS.filter((t) => t.id !== 'ruler').map((t) => (
+                            <div key={t.id} className={`tl-lane ${t.id === 'video' ? 'tl-lane-video' : ''}`} style={{ top: top(t.id), height: t.h }} />
+                        ))}
+
                         {/* ruler */}
-                        <div className="relative cursor-ew-resize border-b border-white/10" style={{ height: TRACK_H.ruler }} onPointerDown={(e) => { startDrag(e, 'scrub'); seekFromEvent(e); }}>
-                            {ticks.map((t) => (
-                                <div key={t} className="absolute top-0 h-full border-l border-white/15 pl-1 text-[10px] text-muted" style={{ left: X(t) }}>
-                                    {fmt(t)}
+                        <div className="tl-ruler" style={{ height: trackH('ruler') }} onPointerDown={(e) => { startDrag(e, 'scrub'); p.onSeekOut(Math.max(0, Math.min(seqLen, xToOut(e.clientX)))); }}>
+                            {ticks.map((tk) => (
+                                <div key={tk.t} className={`tl-tick ${tk.major ? 'tl-tick-major' : ''}`} style={{ left: X(tk.t) }}>
+                                    {tk.major && <span>{timecode(tk.t).slice(3, 8)}</span>}
                                 </div>
                             ))}
                         </div>
 
-                        {/* video track */}
-                        <div className="relative" style={{ height: TRACK_H.video }} onClick={seekFromEvent}>
-                            <div className="absolute inset-y-1 left-0 flex overflow-hidden rounded opacity-30" style={{ width: total }}>
-                                {p.thumbs.map((th, i) => (
-                                    <img key={i} src={th.url} alt="" className="absolute top-0 h-full object-cover" style={{ left: X(th.t), width: Math.max(8, (p.thumbs[i + 1]?.t ?? th.t + 2) - th.t) * pps }} />
-                                ))}
+                        {/* T1: hook title + stickers */}
+                        {clip.hookTitle && clip.hookTitle.seconds > 0 && clip.hookTitle.text.trim() && (
+                            <div className="tl-item tl-title" style={{ top: top('text') + 4, height: trackH('text') - 8, left: X(0), width: Math.min(outLen, clip.hookTitle.seconds) * pps }} onPointerDown={(e) => e.stopPropagation()} title="Hook title. Drag the right edge to change how long it shows.">
+                                <Type size={11} /> <span className="truncate">{clip.hookTitle.text}</span>
+                                <span className="tl-handle tl-handle-r" onPointerDown={(e) => startDrag(e, 'title')} />
                             </div>
-                            {ps.map((pc, i) => (
-                                <div
-                                    key={i}
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        p.setSelection({ type: 'piece', i });
-                                        p.onSeek(Math.max(pc.start, Math.min(pc.end - 0.05, T(e.clientX - (e.currentTarget.parentElement!.getBoundingClientRect().left)))));
-                                    }}
-                                    className={`absolute inset-y-1 overflow-hidden rounded border-2 ${sel?.type === 'piece' && sel.i === i ? 'border-white' : 'border-accent/80'} ${pc.cut ? 'tl-cut' : ''}`}
-                                    style={{ left: X(pc.start), width: Math.max(2, (pc.end - pc.start) * pps) }}
-                                >
-                                    {p.thumbs
-                                        .filter((th) => th.t >= pc.start - 2 && th.t < pc.end)
-                                        .map((th, k) => (
-                                            <img key={k} src={th.url} alt="" className="absolute top-0 h-full object-cover" style={{ left: X(th.t) - X(pc.start), width: 2 * pps + 1 }} />
-                                        ))}
-                                    {pc.cut && <span className="absolute inset-0 grid place-items-center text-xs font-bold text-red-200">CUT</span>}
-                                </div>
-                            ))}
-                            {cuts.map((c, i) =>
-                                ps.some((pc) => pc.cut && pc.start <= c.start + 0.01 && pc.end >= c.end - 0.01) ? null : (
-                                    <div
-                                        key={`c${i}`}
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            p.setSelection({ type: 'cut', i });
-                                        }}
-                                        title="Cut part. Select it and press Restore to bring it back."
-                                        className={`tl-cut absolute inset-y-1 rounded ${sel?.type === 'cut' && sel.i === i ? 'ring-2 ring-white' : ''}`}
-                                        style={{ left: X(c.start), width: Math.max(3, (c.end - c.start) * pps) }}
-                                    />
-                                )
-                            )}
-                            <div className="absolute inset-y-0 z-10 w-3 -translate-x-1/2 cursor-ew-resize rounded bg-accent" style={{ left: X(clip.start) }} onPointerDown={(e) => startDrag(e, 'trim-start')} title="Drag to change the start" />
-                            <div className="absolute inset-y-0 z-10 w-3 -translate-x-1/2 cursor-ew-resize rounded bg-accent" style={{ left: X(clip.end) }} onPointerDown={(e) => startDrag(e, 'trim-end')} title="Drag to change the end" />
-                        </div>
-
-                        {/* captions track */}
-                        <div className="relative border-t border-white/5" style={{ height: TRACK_H.captions }} onClick={seekFromEvent}>
-                            {p.groups.map((g, i) => (
-                                <button
-                                    key={i}
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        p.setSelection({ type: 'caption', i });
-                                        p.onSeek(capTimes[i].start + 0.01);
-                                    }}
-                                    className={`absolute inset-y-1 truncate rounded px-1 text-left text-[10px] leading-6 ${sel?.type === 'caption' && sel.i === i ? 'bg-white text-ink' : 'bg-sky-500/30 text-sky-50 hover:bg-sky-500/50'}`}
-                                    style={{ left: X(capTimes[i].start), width: Math.max(4, (capTimes[i].end - capTimes[i].start) * pps - 1) }}
-                                    title={g.map((w) => w.text).join(' ')}
-                                >
-                                    {g.map((w) => w.text).join(' ')}
-                                </button>
-                            ))}
-                        </div>
-
-                        {/* text track: hook title and stickers */}
-                        <div className="relative border-t border-white/5" style={{ height: TRACK_H.text }} onClick={seekFromEvent}>
-                            {clip.hookTitle && clip.hookTitle.seconds > 0 && clip.hookTitle.text.trim() && (
-                                <div className="absolute inset-y-0.5 truncate rounded bg-white/85 pl-1 text-[10px] leading-5 font-bold text-ink" style={{ left: X(clip.start), width: clip.hookTitle.seconds * pps }} title="Hook title. Drag the right edge to change how long it shows.">
-                                    T {clip.hookTitle.text}
-                                    <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-ink/30" onPointerDown={(e) => startDrag(e, 'title')} />
-                                </div>
-                            )}
-                            {(clip.stickers ?? []).map((st, i) => (
+                        )}
+                        {(clip.stickers ?? []).map((st, i) =>
+                            visible(st.start) || visible(st.end - 0.01) ? (
                                 <div
                                     key={st.id}
-                                    onPointerDown={(e) => {
-                                        p.setSelection({ type: 'sticker', i });
-                                        startDrag(e, 'sticker-move', i);
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className={`absolute inset-y-0.5 cursor-grab truncate rounded bg-amber-400/80 px-2 text-[10px] leading-5 font-bold text-ink ${sel?.type === 'sticker' && sel.i === i ? 'ring-2 ring-white' : ''}`}
-                                    style={{ left: X(st.start), width: Math.max(10, (st.end - st.start) * pps) }}
+                                    className={`tl-item tl-sticker ${sel?.type === 'sticker' && sel.i === i ? 'tl-selected' : ''}`}
+                                    style={{ top: top('text') + 4, height: trackH('text') - 8, left: X(outOf(st.start)), width: Math.max(8, (outOf(st.end) - outOf(st.start)) * pps) }}
+                                    onPointerDown={(e) => { p.setSelection({ type: 'sticker', i }); startDrag(e, 'sticker-move', { index: i }); }}
                                     title="Text sticker. Drag to move, drag the edges to resize."
                                 >
-                                    ✎ {st.text}
-                                    <span className="absolute inset-y-0 left-0 w-2 cursor-ew-resize" onPointerDown={(e) => { p.setSelection({ type: 'sticker', i }); startDrag(e, 'sticker-l', i); }} />
-                                    <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize" onPointerDown={(e) => { p.setSelection({ type: 'sticker', i }); startDrag(e, 'sticker-r', i); }} />
+                                    <span className="truncate">{st.text}</span>
+                                    <span className="tl-handle tl-handle-l" onPointerDown={(e) => { p.setSelection({ type: 'sticker', i }); startDrag(e, 'sticker-l', { index: i }); }} />
+                                    <span className="tl-handle tl-handle-r" onPointerDown={(e) => { p.setSelection({ type: 'sticker', i }); startDrag(e, 'sticker-r', { index: i }); }} />
                                 </div>
-                            ))}
-                        </div>
+                            ) : null
+                        )}
 
-                        {/* effects track */}
-                        <div className="relative border-t border-white/5" style={{ height: TRACK_H.effects }} onClick={seekFromEvent}>
-                            {p.events
-                                .filter((e) => (e.type === 'reaction' || e.type === 'chat') && e.start >= winStart && e.start <= winEnd)
-                                .map((e, i) => (
-                                    <span key={`l${i}`} className="pointer-events-none absolute top-1 text-xs opacity-80" style={{ left: X(e.start) - 6 }} title={e.type === 'chat' ? `Chat spike: ${e.label}` : 'Laugh or reaction'}>
-                                        {e.type === 'chat' ? '💬' : '😂'}
-                                    </span>
-                                ))}
-                            {clip.replay && replayLength(clip) > 0 && (
-                                <div className="absolute inset-y-1 truncate rounded bg-rose-500/70 pl-1 text-[10px] leading-5 font-bold" style={{ left: X(clip.end), width: replayLength(clip) * pps }} title="Instant replay (plays after the clip)">
-                                    ⏪ Replay
-                                </div>
-                            )}
-                            {zooms.map((z, i) => (
+                        {/* FX: zooms, shakes, replay, freeze, laughs */}
+                        {p.events
+                            .filter((e) => (e.type === 'reaction' || e.type === 'chat') && visible(e.start))
+                            .map((e, i) => (
+                                <span key={`l${i}`} className="tl-marker-emoji" style={{ top: top('fx') + 8, left: X(outOf(e.start)) - 7 }} title={e.type === 'chat' ? `Chat spike: ${e.label}` : 'Laugh or reaction'}>
+                                    {e.type === 'chat' ? '💬' : '😂'}
+                                </span>
+                            ))}
+                        {(clip.zooms ?? []).map((z, i) =>
+                            visible(z.start) || visible(z.end - 0.01) ? (
                                 <div
-                                    key={i}
-                                    onPointerDown={(e) => {
-                                        p.setSelection({ type: 'zoom', i });
-                                        startDrag(e, 'zoom-move', i);
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className={`absolute inset-y-1 cursor-grab truncate rounded bg-fuchsia-500/60 px-2 text-[10px] leading-5 font-bold ${sel?.type === 'zoom' && sel.i === i ? 'ring-2 ring-white' : ''}`}
-                                    style={{ left: X(z.start), width: Math.max(10, (z.end - z.start) * pps) }}
+                                    key={`z${i}`}
+                                    className={`tl-item tl-zoom ${sel?.type === 'zoom' && sel.i === i ? 'tl-selected' : ''}`}
+                                    style={{ top: top('fx') + 4, height: trackH('fx') - 8, left: X(outOf(z.start)), width: Math.max(10, (outOf(z.end) - outOf(z.start)) * pps) }}
+                                    onPointerDown={(e) => { p.setSelection({ type: 'zoom', i }); startDrag(e, 'zoom-move', { index: i }); }}
                                     title="Zoom. Drag to move, drag the edges to resize."
                                 >
-                                    🔍 {z.scale.toFixed(2)}×
-                                    <span className="absolute inset-y-0 left-0 w-2 cursor-ew-resize" onPointerDown={(e) => { p.setSelection({ type: 'zoom', i }); startDrag(e, 'zoom-l', i); }} />
-                                    <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize" onPointerDown={(e) => { p.setSelection({ type: 'zoom', i }); startDrag(e, 'zoom-r', i); }} />
+                                    <ZoomIn size={11} /> <span className="truncate">{z.scale.toFixed(2)}×</span>
+                                    <span className="tl-handle tl-handle-l" onPointerDown={(e) => { p.setSelection({ type: 'zoom', i }); startDrag(e, 'zoom-l', { index: i }); }} />
+                                    <span className="tl-handle tl-handle-r" onPointerDown={(e) => { p.setSelection({ type: 'zoom', i }); startDrag(e, 'zoom-r', { index: i }); }} />
                                 </div>
-                            ))}
-                            {clip.freeze && clip.freeze.seconds > 0 && (
-                                <div className="absolute inset-y-1 truncate rounded bg-cyan-400/60 pl-1 text-[10px] leading-5 font-bold" style={{ left: X(clip.end + replayLength(clip)), width: clip.freeze.seconds * pps }} title="Freeze ending. Drag the right edge to change its length.">
-                                    ❄ {clip.freeze.text || 'Freeze'}
-                                    <span className="absolute inset-y-0 right-0 w-2 cursor-ew-resize bg-ink/30" onPointerDown={(e) => startDrag(e, 'freeze')} />
-                                </div>
-                            )}
-                            {(clip.shakes ?? []).map((sh, i) => (
+                            ) : null
+                        )}
+                        {(clip.shakes ?? []).map((sh, i) =>
+                            visible(sh.t) ? (
                                 <button
                                     key={`sh${i}`}
-                                    onPointerDown={(e) => {
-                                        p.setSelection({ type: 'shake', i });
-                                        startDrag(e, 'shake-move', i);
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className={`absolute top-0.5 z-10 grid size-5 -translate-x-1/2 cursor-grab place-items-center rounded bg-yellow-300 text-[11px] text-ink ${sel?.type === 'shake' && sel.i === i ? 'ring-2 ring-white' : ''}`}
-                                    style={{ left: X(sh.t) }}
+                                    className={`tl-pin tl-pin-shake ${sel?.type === 'shake' && sel.i === i ? 'tl-selected' : ''}`}
+                                    style={{ top: top('fx') + 7, left: X(outOf(sh.t)) - 10 }}
+                                    onPointerDown={(e) => { p.setSelection({ type: 'shake', i }); startDrag(e, 'shake', { index: i }); }}
                                     title={sh.kind === 'flash' ? 'Flash' : sh.kind === 'both' ? 'Shake + flash' : 'Shake'}
                                 >
                                     {sh.kind === 'flash' ? '✦' : '⚡'}
                                 </button>
-                            ))}
-                        </div>
+                            ) : null
+                        )}
+                        {replay > 0 && (
+                            <div className="tl-item tl-replay" style={{ top: top('fx') + 4, height: trackH('fx') - 8, left: X(outLen), width: replay * pps }} onPointerDown={(e) => e.stopPropagation()} title="Instant replay (plays after the clip)">
+                                <FastForward size={11} className="rotate-180" /> <span className="truncate">Replay</span>
+                            </div>
+                        )}
+                        {freeze > 0 && (
+                            <div className="tl-item tl-freeze" style={{ top: top('fx') + 4, height: trackH('fx') - 8, left: X(outLen + replay), width: freeze * pps }} onPointerDown={(e) => e.stopPropagation()} title="Freeze ending. Drag the right edge to change its length.">
+                                <span className="truncate">❄ {clip.freeze?.text || 'Freeze'}</span>
+                                <span className="tl-handle tl-handle-r" onPointerDown={(e) => startDrag(e, 'freeze')} />
+                            </div>
+                        )}
 
-                        {/* audio track */}
-                        <div className="relative border-t border-white/5" style={{ height: TRACK_H.audio }} onClick={seekFromEvent}>
-                            {bars.map((b, i) => (
-                                <div key={i} className={`absolute bottom-1 w-px ${b.t >= clip.start && b.t <= clip.end ? 'bg-emerald-300/70' : 'bg-white/15'}`} style={{ left: X(b.t), height: Math.max(1, b.v * (TRACK_H.audio - 6)) }} />
-                            ))}
-                            {(clip.sfx ?? []).map((sx, i) => (
+                        {/* V1: the parts of the video */}
+                        {segOut.map((r, idx) => {
+                            const s = r.seg;
+                            const selected = selectedIds.includes(s.id);
+                            const lay = s.layout ?? p.style.layout;
+                            return (
+                                <div
+                                    key={s.id}
+                                    className={`tl-seg ${selected ? 'tl-seg-selected' : ''} ${s.layout ? 'tl-seg-custom' : ''}`}
+                                    style={{ top: top('video') + 4, height: trackH('video') - 8, left: X(r.start), width: Math.max(4, (r.end - r.start) * pps) }}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => clickSeg(e, s.id)}
+                                    onDoubleClick={() => p.onSeekOut(r.start)}
+                                    onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        if (!selectedIds.includes(s.id)) p.setSelection({ type: 'segs', ids: [s.id] });
+                                        setMenu({ x: e.clientX, y: e.clientY, segId: s.id });
+                                    }}
+                                    title="Click to select · right-click for options · drag the edges to trim"
+                                >
+                                    <div className="tl-film">
+                                        {p.thumbs
+                                            .filter((th) => th.t >= s.start - 1 && th.t < s.end)
+                                            .map((th, k) => (
+                                                <img key={k} src={th.url} alt="" draggable={false} style={{ left: Math.max(0, (Math.max(th.t, s.start) - s.start) * pps) }} />
+                                            ))}
+                                    </div>
+                                    <div className="tl-seg-label">
+                                        <span className="tl-seg-num">{idx + 1}</span>
+                                        <span className={`tl-badge ${s.layout ? 'tl-badge-custom' : ''}`}>{layoutName(lay)}</span>
+                                    </div>
+                                    {tool === 'select' && (
+                                        <>
+                                            <span className="tl-trim tl-trim-l" onPointerDown={(e) => startDrag(e, 'trim-l', { segId: s.id })} title="Drag to trim the start" />
+                                            <span className="tl-trim tl-trim-r" onPointerDown={(e) => startDrag(e, 'trim-r', { segId: s.id })} title="Drag to trim the end" />
+                                        </>
+                                    )}
+                                </div>
+                            );
+                        })}
+
+                        {/* CC: captions */}
+                        {p.groups.map((g, i) => {
+                            const a = outOf(capTimes[i].start);
+                            const b = outOf(capTimes[i].end);
+                            if (b - a < 0.02) return null;
+                            return (
+                                <button
+                                    key={i}
+                                    className={`tl-cap ${sel?.type === 'caption' && sel.i === i ? 'tl-selected' : ''}`}
+                                    style={{ top: top('cc') + 5, height: trackH('cc') - 10, left: X(a), width: Math.max(4, (b - a) * pps - 1) }}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={() => {
+                                        p.setSelection({ type: 'caption', i });
+                                        p.onSeekOut(a + 0.01);
+                                    }}
+                                    title={`${g.map((w) => w.text).join(' ')}. Click to edit`}
+                                >
+                                    {g.map((w) => w.text).join(' ')}
+                                </button>
+                            );
+                        })}
+
+                        {/* A1: audio waveform + bleeps */}
+                        <div className="tl-audio" style={{ top: top('a1') + 5, height: trackH('a1') - 10, left: 0, width: Math.min(contentW, 16000) }}>
+                            <canvas ref={waveRef} className="h-full" />
+                        </div>
+                        {p.bleeps.map((b, i) =>
+                            visible(b.start) ? <div key={`b${i}`} className="tl-bleep" style={{ top: top('a1') + 5, height: trackH('a1') - 10, left: X(outOf(b.start)), width: Math.max(3, (outOf(b.end) - outOf(b.start)) * pps) }} title="Bleep" /> : null
+                        )}
+                        {!p.energy && <span className="absolute text-[10px] text-white/30" style={{ top: top('a1') + 16, left: X(0) + 8 }}>No waveform for this project</span>}
+
+                        {/* A2: sound effects + music */}
+                        {p.hasMusic && <div className="tl-music" style={{ top: top('a2') + 6, height: trackH('a2') - 12, left: X(0), width: seqLen * pps }}><Music size={10} /> Music</div>}
+                        {(clip.sfx ?? []).map((sx, i) =>
+                            visible(sx.t) ? (
                                 <button
                                     key={`sx${i}`}
-                                    onPointerDown={(e) => {
-                                        p.setSelection({ type: 'sfx', i });
-                                        startDrag(e, 'sfx-move', i);
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                    className={`absolute top-1 z-10 grid size-6 -translate-x-1/2 cursor-grab place-items-center rounded-full bg-sky-400 text-xs ${sel?.type === 'sfx' && sel.i === i ? 'ring-2 ring-white' : ''}`}
-                                    style={{ left: X(sx.t) }}
-                                    title={`Sound effect: ${SFX_KINDS.find((k) => k.id === sx.kind)?.label}. Drag to move.`}
+                                    className={`tl-pin tl-pin-sfx ${sel?.type === 'sfx' && sel.i === i ? 'tl-selected' : ''}`}
+                                    style={{ top: top('a2') + 4, left: X(outOf(sx.t)) - 10 }}
+                                    onPointerDown={(e) => { p.setSelection({ type: 'sfx', i }); startDrag(e, 'sfx', { index: i }); }}
+                                    title={`${SFX_KINDS.find((k) => k.id === sx.kind)?.label}. Drag to move.`}
                                 >
                                     {SFX_KINDS.find((k) => k.id === sx.kind)?.icon}
                                 </button>
-                            ))}
-                            {p.bleeps.map((b, i) => (
-                                <div key={`b${i}`} className="absolute inset-y-1 rounded-sm bg-red-500/70" style={{ left: X(b.start), width: Math.max(3, (b.end - b.start) * pps) }} title="Bleep" />
-                            ))}
-                            {!p.energy && <span className="absolute inset-0 grid place-items-center text-[10px] text-muted">No waveform for this project</span>}
-                        </div>
+                            ) : null
+                        )}
 
-                        {/* dim outside the clip */}
-                        <div className="pointer-events-none absolute top-[22px] bottom-0 left-0 bg-black/50" style={{ width: Math.max(0, X(clip.start)) }} />
-                        <div className="pointer-events-none absolute top-[22px] bottom-0 bg-black/50" style={{ left: X(clip.end + tail), right: 0 }} />
+                        {/* end of sequence shading */}
+                        <div className="tl-after" style={{ top: trackH('ruler'), left: X(seqLen), height: TOTAL_H - trackH('ruler') }} />
 
-                        {/* playhead */}
-                        <div className="pointer-events-none absolute top-0 bottom-0 z-30 w-0.5 bg-white" style={{ left: X(p.time) }}>
-                            <div className="-ml-[5px] h-3 w-3 rotate-45 bg-white" />
+                        {/* razor guide and playhead */}
+                        <div ref={razorLineRef} className="tl-razor-line" style={{ height: TOTAL_H }} />
+                        <div ref={playheadRef} className="tl-playhead" style={{ height: TOTAL_H }}>
+                            <div className="tl-playhead-head" />
                         </div>
                     </div>
                 </div>
             </div>
-            <p className="border-t border-white/10 px-3 py-1.5 text-[11px] text-muted">
-                Space play/pause · S split · Delete remove the selected item (or restore a cut part) · Z add zoom · ←/→ step · Ctrl+Z undo · Ctrl+Y redo · drag the green handles to trim
+
+            {/* right-click menu */}
+            {menu && (
+                <div className="tl-menu" style={{ left: Math.min(menu.x, window.innerWidth - 260), top: Math.min(menu.y, window.innerHeight - 330) }} onPointerDown={(e) => e.stopPropagation()}>
+                    <p className="tl-menu-title">Layout for {selectedIds.length > 1 ? `${selectedIds.length} parts` : 'this part'}</p>
+                    {LAYOUTS.map((l) => (
+                        <button key={l.id} onClick={() => { setLayout(selectedIds.length ? selectedIds : [menu.segId], l.id); setMenu(null); }}>
+                            <span className="w-4">{(selLayout === l.id) && <Check size={13} />}</span>
+                            {l.label}
+                        </button>
+                    ))}
+                    <div className="tl-menu-sep" />
+                    <button onClick={() => { splitAt(outNow.current); setMenu(null); }}><span className="w-4"><Scissors size={13} /></span>Split at playhead<kbd>Ctrl+K</kbd></button>
+                    <button onClick={() => { rippleDelete(selectedIds.length ? selectedIds : [menu.segId]); setMenu(null); }}><span className="w-4"><Trash2 size={13} /></span>Delete (close the gap)<kbd>Del</kbd></button>
+                    <button onClick={() => { p.setSelection({ type: 'segs', ids: segs.map((s) => s.id) }); setMenu(null); }}><span className="w-4" />Select all parts</button>
+                </div>
+            )}
+
+            <p className="tl-help">
+                <b>V</b> select · <b>C</b> razor · <b>Ctrl+K</b> split at playhead · <b>Del</b> delete part · <b>J K L</b> back / pause / play · <b>←→</b> frame · <b>↑↓</b> previous / next cut · <b>S</b> snapping · <b>Ctrl+scroll</b> zoom · right-click a part to change its layout
             </p>
         </div>
     );
-}
+});
+
+export default memo(Timeline);

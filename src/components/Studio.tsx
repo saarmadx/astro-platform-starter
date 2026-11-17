@@ -9,6 +9,7 @@ import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveP
 import type { Brand, Clip, Project, StyleSettings } from '../lib/types';
 import BrandKit from './BrandKit';
 import Editor from './Editor';
+import { Home as HomeIcon, Palette, Scissors } from 'lucide-react';
 import Home, { type NewProjectInput } from './Home';
 import ProjectView from './ProjectView';
 
@@ -274,16 +275,16 @@ export default function Studio() {
 
     return (
         <div className="flex min-h-screen">
-            <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col gap-1 border-r border-white/10 bg-surface/60 p-4 md:flex">
+            <aside className={`sticky ${view.name === 'editor' ? '!hidden' : ''} top-0 hidden h-screen w-60 shrink-0 flex-col gap-1 border-r border-white/10 bg-surface/60 p-4 md:flex`}>
                 <a href="/" className="mb-6 flex items-center gap-2 px-2 text-lg font-extrabold no-underline">
-                    <span className="grid size-8 place-items-center rounded-lg bg-accent text-ink">✂</span>
+                    <span className="grid size-8 place-items-center rounded-lg bg-accent text-ink"><Scissors size={16} strokeWidth={2.5} /></span>
                     Clipsmith
                 </a>
                 <NavButton active={view.name === 'home'} onClick={() => setView({ name: 'home' })}>
-                    Home
+                    <HomeIcon size={15} className="mr-2.5 opacity-70" />Home
                 </NavButton>
                 <NavButton active={view.name === 'brand'} onClick={() => setView({ name: 'brand' })}>
-                    Brand kit
+                    <Palette size={15} className="mr-2.5 opacity-70" />Brand kit
                 </NavButton>
                 <p className="mt-6 px-3 text-xs font-semibold tracking-wider text-muted uppercase">Recent projects</p>
                 <div className="flex flex-col gap-0.5 overflow-y-auto">
@@ -297,7 +298,7 @@ export default function Studio() {
             </aside>
 
             <div className="flex min-w-0 grow flex-col">
-                <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 md:hidden">
+                <div className={`flex items-center justify-between border-b border-white/10 px-4 py-3 md:hidden ${view.name === 'editor' ? '!hidden' : ''}`}>
                     <a href="/" className="flex items-center gap-2 font-extrabold no-underline">
                         <span className="grid size-7 place-items-center rounded-lg bg-accent text-ink">✂</span>Clipsmith
                     </a>
@@ -307,7 +308,7 @@ export default function Studio() {
                     </div>
                 </div>
 
-                <main className="mx-auto w-full max-w-7xl grow px-4 py-6 sm:px-8">
+                <main className={view.name === 'editor' ? 'w-full grow' : 'mx-auto w-full max-w-7xl grow px-4 py-6 sm:px-8'}>
                     {view.name === 'home' && (
                         <Home projects={projects} running={progress} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} onRestore={(ps) => ps.forEach((p) => update({ ...p, status: p.status === 'transcribing' || p.status === 'clipping' ? 'error' : p.status }))} accessCode={accessCode} setAccessCode={setAccessCode} />
                     )}

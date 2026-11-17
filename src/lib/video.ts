@@ -7,7 +7,7 @@ import { replayLength } from './fx';
 import { sfxWav } from './sfx';
 import { cropPath, cropWindow, outputSize } from './geometry';
 import { FONT_FILES, getTemplate } from './templates';
-import { keptSegments, outputDuration, toOutput, toOutputClamped } from './timeline';
+import { keptSegments, outputDuration, segmentsOf, styleAt, toOutput, toOutputClamped, toSource } from './timeline';
 import type { Brand, Clip, Project, StyleSettings, Word } from './types';
 
 // All video work happens in the user's browser with ffmpeg.wasm, so videos never have to be
@@ -241,9 +241,9 @@ function layout(
     H: number,
     zoomAt: (frameTime: string) => string | null,
     shake: string | null,
-    cropPoints: { t: number; x: number }[]
+    cropPoints: { t: number; x: number }[],
+    style: StyleSettings
 ): string {
-    const { style } = o;
     const vw = o.videoWidth;
     const vh = o.videoHeight;
     const zp = (w: number, h: number) => {
@@ -370,8 +370,10 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
     };
     const shakeTimes = (clip.shakes ?? []).filter((s) => s.kind !== 'flash').map((s) => rel(outT(s.t))).filter((a) => a > -0.5 && a < partLen);
     const shake = shakeTimes.length ? shakeTimes.map((a) => `between(in/${FPS},${a.toFixed(2)},${(a + 0.45).toFixed(2)})`).join('+') : null;
-    const cropPoints = cropPath(clip, style, o.videoWidth, o.videoHeight).map((p) => ({ t: rel(outT(Math.max(clip.start, p.t))), x: p.x }));
-    v = layout(o, g, v, W, H, zoomAt, shake, cropPoints);
+    // every piece has a single framing (pieces are split where a part's layout changes)
+    const ls = styleAt(clip, style, toSource(clip, (ws + Math.max(ws, Math.min(we, tm.total) - 0.01)) / 2, segs));
+    const cropPoints = cropPath(clip, ls, o.videoWidth, o.videoHeight).map((p) => ({ t: rel(outT(Math.max(clip.start, p.t))), x: p.x }));
+    v = layout(o, g, v, W, H, zoomAt, shake, cropPoints, ls);
 
     for (const [i, s] of (clip.shakes ?? []).filter((s) => s.kind !== 'shake').entries()) {
         const a = rel(outT(s.t));
@@ -437,9 +439,10 @@ function replayCommand(o: RenderOptions, input: string, W: number, H: number, ou
     const inputs: string[] = ['-ss', f3(r.start), '-t', f3(r.end - r.start + 0.05), '-i', input];
     const g: string[] = [`[0:v]trim=start=0:end=${f3(r.end - r.start)},setpts=(PTS-STARTPTS)/${r.speed.toFixed(3)},fps=${FPS},setsar=1[vr]`];
     let n = 1;
-    const pos = cropPath(clip, style, o.videoWidth, o.videoHeight);
+    const rs = styleAt(clip, style, r.start);
+    const pos = cropPath(clip, rs, o.videoWidth, o.videoHeight);
     const at = pos.reduce((best, p) => (p.t <= r.start ? p : best), pos[0]);
-    let v = layout(o, g, 'vr', W, H, () => '1.18', null, [{ t: 0, x: at.x }]);
+    let v = layout(o, g, 'vr', W, H, () => '1.18', null, [{ t: 0, x: at.x }], rs);
     if (tm.freeze) {
         g.push(`[${v}]tpad=stop_mode=clone:stop_duration=${(tm.freeze + 0.2).toFixed(2)}[vz]`);
         v = 'vz';
@@ -542,18 +545,43 @@ export async function renderClip(o: RenderOptions): Promise<Blob> {
     const hasSource = await hasAudio(o.file);
     const assets = await prepareAssets(o, W, H);
 
-    // main part (+ freeze when there's no replay) split into pieces of at least ~4 seconds
+    // main part (+ freeze when there's no replay): first split where a part's framing changes,
+    // then split long stretches so every processor core gets a piece
     const mainLen = snap(tm.total + (tm.replay ? 0 : tm.freeze));
-    const nParts = Math.max(1, Math.min(parallelism(), Math.floor(mainLen / 4)));
+    const runs: { start: number; end: number; key: string }[] = [];
+    let acc = 0;
+    for (const sg of segmentsOf(clip)) {
+        const key = `${sg.layout ?? style.layout}|${sg.cropX ?? style.cropX}`;
+        const len = sg.end - sg.start;
+        const last = runs[runs.length - 1];
+        if (last && last.key === key) last.end = acc + len;
+        else runs.push({ start: acc, end: acc + len, key });
+        acc += len;
+    }
+    runs[runs.length - 1].end = mainLen;
+    const target = Math.max(4, mainLen / parallelism());
     const bounds: number[] = [0];
-    for (let i = 1; i < nParts; i++) bounds.push(snap((mainLen * i) / nParts));
-    bounds.push(mainLen);
-    const jobs = nParts + (tm.replay ? 1 : 0);
+    for (const r of runs) {
+        const n = Math.max(1, Math.floor((r.end - r.start) / target));
+        for (let k = 1; k <= n; k++) {
+            const b = snap(k === n ? r.end : r.start + ((r.end - r.start) * k) / n);
+            if (b - bounds[bounds.length - 1] >= 1 / FPS) bounds.push(b);
+        }
+    }
+    bounds[bounds.length - 1] = mainLen;
+    const nParts = bounds.length - 1;
+    const jobList: { kind: 'part' | 'replay'; i: number }[] = Array.from({ length: nParts }, (_, i) => ({ kind: 'part' as const, i }));
+    if (tm.replay) jobList.push({ kind: 'replay', i: nParts });
+    const engines = Math.max(1, Math.min(parallelism(), jobList.length));
+    let finished = 0;
 
     const report = () => {
-        let done = 0;
-        for (let i = 0; i < jobs; i++) done += pool[i % Math.max(1, parallelism())]?.progress ?? 0;
-        o.onProgress(Math.min(0.95, (done / jobs) * 0.9));
+        let active = 0;
+        for (let e = 0; e < engines; e++) {
+            const pr = pool[e]?.progress ?? 0;
+            if (pr < 1) active += pr;
+        }
+        o.onProgress(Math.min(0.95, ((finished + active) / jobList.length) * 0.9));
     };
     progressListener = report;
 
@@ -568,22 +596,26 @@ export async function renderClip(o: RenderOptions): Promise<Blob> {
         const data = (await ff.readFile(out)) as Uint8Array;
         await ff.deleteFile(out);
         engineAt(engine).progress = 1;
+        finished++;
         report();
         return data;
     };
 
     try {
-        const tasks: Promise<Uint8Array>[] = [];
-        for (let i = 0; i < nParts; i++) {
-            tasks.push(runJob(i, (input) => videoPartCommand(o, input, bounds[i], bounds[i + 1], W, H, !tm.replay && i === nParts - 1, `/part_${i}.mp4`), shiftAss(assets.ass, bounds[i]), `/part_${i}.mp4`));
-        }
-        if (tm.replay) {
-            // the replay goes on its own engine when one is free, else after the first piece
-            const eng = nParts < parallelism() ? nParts : 0;
-            const after = eng === 0 ? tasks[0] : Promise.resolve(new Uint8Array());
-            tasks.push(after.then(() => runJob(eng, (input) => replayCommand(o, input, W, H, '/replay.mp4'), null, '/replay.mp4')));
-        }
-        const parts = await Promise.all(tasks);
+        // a small job queue: each engine takes the next piece when it's free
+        const parts: Uint8Array[] = new Array(jobList.length);
+        let next = 0;
+        await Promise.all(
+            Array.from({ length: engines }, async (_, e) => {
+                while (next < jobList.length) {
+                    const job = jobList[next++];
+                    if (job.kind === 'part') {
+                        const i = job.i;
+                        parts[i] = await runJob(e, (input) => videoPartCommand(o, input, bounds[i], bounds[i + 1], W, H, !tm.replay && i === nParts - 1, `/part_${i}.mp4`), shiftAss(assets.ass, bounds[i]), `/part_${i}.mp4`);
+                    } else parts[job.i] = await runJob(e, (input) => replayCommand(o, input, W, H, '/replay.mp4'), null, '/replay.mp4');
+                }
+            })
+        );
 
         // sound in one pass, then join everything on the first engine (no re-encoding)
         const { ff, input } = await mountOn(0, o.file);

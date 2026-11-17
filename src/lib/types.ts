@@ -33,6 +33,9 @@ export type Clip = {
     /** auto-reframe path: time (absolute, seconds) -> face centre as a fraction of video width */
     track?: { t: number; x: number }[];
     thumb?: string; // data URL
+    /** the parts of the video that make up this clip, in order (absolute source times).
+     *  When present this is the source of truth; `cuts`/`splits` are only used by older projects. */
+    segs?: Seg[];
     /** split points added in the timeline (absolute source times) */
     splits?: number[];
     /** parts of the clip removed in the timeline (absolute source times) */
@@ -75,6 +78,9 @@ export type Sticker = {
 };
 
 export type Span = { start: number; end: number };
+
+/** One part of a clip on the timeline. Each part can have its own framing. */
+export type Seg = { id: string; start: number; end: number; layout?: Layout; cropX?: number };
 
 export type Aspect = '9:16' | '1:1' | '16:9';
 export type Layout = 'auto' | 'manual' | 'fit' | 'split';

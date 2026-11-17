@@ -4,7 +4,7 @@
 import { captionSize, captionY, displayText, emojiEvents, groupTimes, type DWord } from './captions';
 import { aspectRatio, cropPath, cropWindow, posAt } from './geometry';
 import { getTemplate, TITLE_FONT } from './templates';
-import { outputDuration, toOutputClamped } from './timeline';
+import { outputDuration, styleAt, toOutputClamped } from './timeline';
 import type { Brand, Clip, Sticker, StyleSettings } from './types';
 
 export type Scene = {
@@ -147,7 +147,8 @@ function drawRegion(ctx: CanvasRenderingContext2D, v: HTMLVideoElement, sx: numb
     ctx.drawImage(v, sx, sy, sw, sh, dx, dy, dw, dh);
 }
 
-export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, clip: Clip, style: StyleSettings) {
+export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, clip: Clip, baseStyle: StyleSettings) {
+    const style = styleAt(clip, baseStyle, t); // a part of the clip can have its own framing
     const W = ctx.canvas.width;
     const H = ctx.canvas.height;
     ctx.fillStyle = '#000';

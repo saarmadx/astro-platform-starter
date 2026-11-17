@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowLeft, Captions as CaptionsIcon, ChevronLeft, ChevronRight, Download, Image as ImageIcon, LayoutPanelTop, Layers, Play, Send, Sparkles } from 'lucide-react';
 import { projectEvents } from '../lib/audio';
 import { bleepSpans } from '../lib/censor';
 import { buildSrt, displayWords, groupWords } from '../lib/captions';
@@ -8,7 +9,7 @@ import { playSfx, SFX_KINDS } from '../lib/sfx';
 import { analyseClip, detectFacecam } from '../lib/faces';
 import { outputSize } from '../lib/geometry';
 import { DEFAULT_SPEAKER_COLORS, TEMPLATES, TITLE_FONT } from '../lib/templates';
-import { mergeSpans, outputDuration, silenceCuts, skipCut, toOutputClamped } from '../lib/timeline';
+import { ensureSegs, outputDuration, removeRanges, segmentsOf, silenceCuts, skipCut, toOutputClamped, toSource, withSegs } from '../lib/timeline';
 import { titleIdeas } from '../lib/titles';
 import { fixPrompt, parseFixes, replacePhrase } from '../lib/fixwords';
 import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, SfxKind, StyleSettings, Word } from '../lib/types';
@@ -16,7 +17,7 @@ import { renderClip } from '../lib/video';
 import { Segmented } from './Home';
 import { safeName, saveBlob } from './ProjectView';
 import type { LoadedVideo } from './Studio';
-import Timeline, { type Selection } from './Timeline';
+import Timeline, { LAYOUTS, timecode, type Selection, type TimelineApi } from './Timeline';
 import { Bar, scoreTone, TemplateSwatch } from './ui';
 
 type Props = {
@@ -32,13 +33,13 @@ type Props = {
 };
 
 type Tab = 'captions' | 'layout' | 'effects' | 'post' | 'thumbnail' | 'export';
-const TABS: { id: Tab; label: string }[] = [
-    { id: 'captions', label: 'Captions' },
-    { id: 'layout', label: 'Layout' },
-    { id: 'effects', label: 'Effects' },
-    { id: 'post', label: 'Post' },
-    { id: 'thumbnail', label: 'Thumbnail' },
-    { id: 'export', label: 'Export' }
+const TABS: { id: Tab; label: string; icon: typeof Play }[] = [
+    { id: 'captions', label: 'Captions', icon: CaptionsIcon },
+    { id: 'layout', label: 'Layout', icon: LayoutPanelTop },
+    { id: 'effects', label: 'Effects', icon: Sparkles },
+    { id: 'post', label: 'Post', icon: Send },
+    { id: 'thumbnail', label: 'Thumbnail', icon: ImageIcon },
+    { id: 'export', label: 'Export', icon: Download }
 ];
 
 export default function Editor({ project, clipId, video, brand, onChange, onBack, onSelectClip, onAttach, attachError }: Props) {
@@ -67,10 +68,18 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     const freezeRef = useRef<number | null>(null); // performance.now() when the freeze ending started
     const replayRef = useRef(false); // true while the preview plays the instant replay
     const lastTimeRef = useRef(0);
+    const lastStateRef = useRef(0);
     const selectedStickerRef = useRef<number | null>(null);
     const stickerDrag = useRef<null | { i: number; dx: number; dy: number }>(null);
     const future = useRef<Clip[]>([]);
     const [futureLen, setFutureLen] = useState(0);
+    const timelineRef = useRef<TimelineApi>(null);
+    // the timeline only re-renders when the clip or selection changes: its callbacks never change identity
+    const fns = useRef<Record<string, (...a: any[]) => any>>({});
+    const tl = useMemo(() => {
+        const call = (k: string) => (...a: any[]) => fns.current[k]?.(...a);
+        return { seekOut: call('seekOut'), togglePlay: call('togglePlay'), play: call('play'), pause: call('pause'), beginEdit: call('beginEdit'), update: call('update'), undo: call('undo'), redo: call('redo'), select: call('select'), outTime: call('outTime') };
+    }, []);
 
     useEffect(() => {
         if (!brand.logo) {
@@ -84,7 +93,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
 
     const groups = useMemo(
         () => (clip ? groupWords(displayWords(words, clip, style, project.speakers, false), style.wordsPerLine) : []),
-        [words, clip?.start, clip?.end, clip?.cuts, clip?.keywords, style, project.speakers]
+        [words, clip?.start, clip?.end, clip?.cuts, clip?.segs, clip?.keywords, style, project.speakers]
     );
     const events = useMemo(() => projectEvents(project), [project.transcript, project.chat]);
     const bleeps = useMemo(() => (style.censor === 'bleep' && clip ? bleepSpans(words.filter((w) => w.end > clip.start && w.start < clip.end)) : []), [style.censor, words, clip?.start, clip?.end]);
@@ -169,13 +178,27 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                         ctx.restore();
                     }
                 }
-                setTime(v.currentTime);
+                // the timeline playhead moves every frame without re-rendering; React state updates a few times a second
+                const len = outputDuration(s.clip);
+                const r = s.clip.replay;
+                const outT = freezing !== null ? len + replayLength(s.clip) + freezing * (s.clip.freeze?.seconds ?? 0) : replayRef.current && r ? len + (v.currentTime - r.start) / Math.max(0.1, r.speed) : toOutputClamped(s.clip, v.currentTime);
+                timelineRef.current?.setPlayhead(outT);
+                const now = performance.now();
+                if (v.paused || now - lastStateRef.current > 200) {
+                    lastStateRef.current = now;
+                    setTime(v.currentTime);
+                }
             }
             raf = requestAnimationFrame(loop);
         };
         raf = requestAnimationFrame(loop);
         return () => cancelAnimationFrame(raf);
     }, []);
+
+    // older clips (cut list) are turned into separate parts once, when opened
+    useEffect(() => {
+        if (clip && !clip.segs?.length) onChange({ ...project, clips: project.clips.map((c) => (c.id === clip.id ? ensureSegs(c) : c)) });
+    }, [clip?.id]);
 
     useEffect(() => {
         const v = videoRef.current;
@@ -264,10 +287,36 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         const v = videoRef.current;
         if (!v) return;
         if (v.paused) {
-            if (v.currentTime >= clip.end || v.currentTime < clip.start) v.currentTime = clip.start;
+            if (v.currentTime >= clip.end - 0.02 || v.currentTime < clip.start) v.currentTime = clip.start;
             v.play().catch(() => {});
         } else v.pause();
     }
+    /** seek in sequence time (the finished video) */
+    function seekOut(outT: number) {
+        const len = outputDuration(clip);
+        seek(toSource(clip, Math.max(0, Math.min(len - 0.01, outT))));
+        timelineRef.current?.setPlayhead(Math.max(0, Math.min(len, outT)));
+    }
+    fns.current = {
+        seekOut,
+        togglePlay,
+        play: () => { const v = videoRef.current; if (v?.paused) togglePlay(); },
+        pause: () => videoRef.current?.pause(),
+        beginEdit: () => {
+            history.current = [...history.current.slice(-49), clip];
+            setHistoryLen(history.current.length);
+            future.current = [];
+            setFutureLen(0);
+        },
+        update: setClip,
+        undo,
+        redo,
+        select: (sel: Selection) => {
+            setSelection(sel);
+            if (sel?.type === 'segs') setTab('layout');
+        },
+        outTime: () => toOutputClamped(clip, videoRef.current?.currentTime ?? clip.start)
+    };
 
     /** Replace the words of one caption block with new text, spread across the same time. */
     function editCaption(gi: number, text: string) {
@@ -298,7 +347,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             setTimeout(() => setBusy(''), 2000);
             return;
         }
-        editClip({ cuts: mergeSpans([...(clip.cuts ?? []), ...found]) });
+        editClip(withSegs(clip, removeRanges(segmentsOf(clip), found)));
         setBusy(`Removed ${found.length} pause${found.length > 1 ? 's' : ''}.`);
         setTimeout(() => setBusy(''), 2500);
     }
@@ -355,22 +404,24 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     const colors = style.speakerColors ?? DEFAULT_SPEAKER_COLORS;
 
     return (
-        <div className="flex flex-col gap-4">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex min-w-0 grow items-center gap-3">
-                    <button className="btn-ghost !px-3" onClick={onBack} aria-label="Back to all clips">←</button>
-                    <span className={`rounded-lg px-2 py-1 text-sm font-extrabold ${scoreTone(clip.score)}`}>{clip.score}</span>
-                    {clip.category && <span className="hidden rounded-lg bg-white/10 px-2 py-1 text-xs font-semibold sm:inline">{clip.category}</span>}
-                    <input className="min-w-0 grow bg-transparent text-lg font-bold outline-none focus:underline" value={clip.title} onChange={(e) => setClip({ title: e.target.value })} aria-label="Clip title" />
+        <div className="ed-root">
+            <header className="ed-header">
+                <button className="ed-hbtn" onClick={onBack} title="Back to all clips" aria-label="Back to all clips"><ArrowLeft size={17} /></button>
+                <span className="ed-logo">✂</span>
+                <div className="ed-hsep" />
+                <span className={`rounded-md px-1.5 py-0.5 text-xs font-extrabold ${scoreTone(clip.score)}`} title="Virality score">{clip.score}</span>
+                <input className="ed-title" value={clip.title} onChange={(e) => setClip({ title: e.target.value })} aria-label="Clip title" />
+                <span className="hidden truncate text-xs text-white/40 xl:inline">{project.name}</span>
+                <div className="ml-auto flex items-center gap-1.5">
+                    <span className="hidden text-xs text-white/40 sm:inline">Clip {idx + 1} of {ordered.length}</span>
+                    <button className="ed-hbtn" disabled={idx <= 0} onClick={() => onSelectClip(ordered[idx - 1].id)} title="Previous clip" aria-label="Previous clip"><ChevronLeft size={17} /></button>
+                    <button className="ed-hbtn" disabled={idx >= ordered.length - 1} onClick={() => onSelectClip(ordered[idx + 1].id)} title="Next clip" aria-label="Next clip"><ChevronRight size={17} /></button>
+                    <button className="ed-export" onClick={() => setTab('export')}><Download size={15} /> Export</button>
                 </div>
-                <div className="flex gap-2">
-                    <button className="btn-ghost" disabled={idx <= 0} onClick={() => onSelectClip(ordered[idx - 1].id)}>Previous</button>
-                    <button className="btn-ghost" disabled={idx >= ordered.length - 1} onClick={() => onSelectClip(ordered[idx + 1].id)}>Next clip</button>
-                </div>
-            </div>
+            </header>
 
             {!video && (
-                <label className="panel flex cursor-pointer flex-wrap items-center justify-between gap-3 p-4">
+                <label className="mx-3 mt-3 flex cursor-pointer flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300/20 bg-amber-300/[0.06] p-3">
                     <span className="text-sm">
                         Select the original video to preview and export: <b className="break-all">{project.fileName}</b>
                         {attachError && <span className="block text-red-300">{attachError}</span>}
@@ -380,18 +431,20 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                 </label>
             )}
 
-            <div className="grid gap-5 lg:grid-cols-[auto_minmax(0,1fr)]">
-                {/* preview */}
-                <section className="flex flex-col items-center gap-2">
-                    <div
-                        className="relative overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl"
-                        style={{ width: style.aspect === '16:9' ? 'min(520px, 92vw)' : style.aspect === '1:1' ? 'min(400px, 92vw)' : 'min(300px, 78vw)' }}
-                    >
+            <div className="ed-main">
+                {/* program monitor */}
+                <section className="ed-monitor">
+                    <div className="ed-monitor-bar">
+                        <span className="font-semibold text-white/70">Program</span>
+                        <span className="text-white/35">{style.aspect} · {outLen.toFixed(1)}s</span>
+                    </div>
+                    <div className="ed-stage">
+                    <div className="ed-frame" style={{ aspectRatio: `${preview.W} / ${preview.H}` }}>
                         <canvas
                             ref={canvasRef}
                             width={preview.W}
                             height={preview.H}
-                            className="block h-auto w-full touch-none"
+                            className="block h-full w-full touch-none"
                             onPointerDown={(e) => {
                                 const c = canvasRef.current!;
                                 const r = c.getBoundingClientRect();
@@ -425,26 +478,31 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                             onPointerUp={() => (stickerDrag.current = null)}
                         />
                         {!playing && video && freezeRef.current === null && (
-                            <button className="absolute inset-0 grid place-items-center bg-black/10" onClick={togglePlay} aria-label="Play">
-                                <span className="grid size-14 place-items-center rounded-full bg-white/90 pl-1 text-xl text-ink">▶</span>
+                            <button className="ed-bigplay" onClick={togglePlay} aria-label="Play">
+                                <span><Play size={26} fill="currentColor" /></span>
                             </button>
                         )}
                         <video ref={videoRef} src={video?.url} playsInline preload="auto" className="pointer-events-none fixed top-0 left-0 size-px opacity-0" onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} />
                         {musicUrl && <audio ref={musicRef} src={musicUrl} loop preload="auto" />}
                     </div>
-                    {busy && <p className="text-xs text-muted">{busy}</p>}
+                    </div>
+                    <div className="ed-monitor-foot">
+                        <span className="font-mono tabular-nums text-white/80">{timecode(outNow)}</span>
+                        <span className="truncate text-white/45">{busy || (selection?.type === 'segs' ? `${selection.ids.length} part${selection.ids.length > 1 ? 's' : ''} selected` : 'Click the video to play or pause')}</span>
+                    </div>
                 </section>
 
-                {/* settings */}
-                <section className="panel flex min-w-0 flex-col overflow-hidden">
-                    <div className="flex overflow-x-auto border-b border-white/10 text-sm">
+                {/* inspector */}
+                <section className="ed-inspector">
+                    <div className="ed-tabs" role="tablist">
                         {TABS.map((t) => (
-                            <button key={t.id} onClick={() => setTab(t.id)} className={`shrink-0 px-4 py-3 font-semibold ${tab === t.id ? 'border-b-2 border-accent text-white' : 'text-muted hover:text-white'}`}>
-                                {t.label}
+                            <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)} className={`ed-tab ${tab === t.id ? 'ed-tab-on' : ''}`}>
+                                <t.icon size={15} />
+                                <span>{t.label}</span>
                             </button>
                         ))}
                     </div>
-                    <div className="flex max-h-[62vh] flex-col gap-5 overflow-y-auto p-4">
+                    <div className="ed-panel">
                         {tab === 'captions' && (
                             <>
                                 <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 xl:grid-cols-6">
@@ -501,14 +559,15 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
 
                         {tab === 'layout' && (
                             <>
+                                <PartInspector clip={clip} style={style} selection={selection} editClip={editClip} setClip={setClip} />
                                 <Field label="Aspect ratio">
                                     <Segmented value={style.aspect} onChange={(v) => setStyle({ aspect: v as Aspect })} items={[{ id: '9:16', label: '9:16' }, { id: '1:1', label: '1:1' }, { id: '16:9', label: '16:9' }]} />
                                 </Field>
-                                <Field label="Layout">
+                                <Field label="Default layout (parts without their own layout)">
                                     <Segmented
                                         value={style.layout}
                                         onChange={(v) => setStyle({ layout: v as Layout })}
-                                        items={[{ id: 'auto', label: 'Follow speaker' }, { id: 'split', label: 'Facecam + gameplay' }, { id: 'manual', label: 'Manual' }, { id: 'fit', label: 'Fit + blur' }]}
+                                        items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit + blur' }]}
                                     />
                                 </Field>
                                 {style.layout === 'auto' && (
@@ -517,8 +576,9 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                         <button className="btn-ghost" disabled={!video} onClick={reframe}>Re-detect speaker</button>
                                     </div>
                                 )}
-                                {style.layout === 'split' && (
+                                {(style.layout === 'split' || segmentsOf(clip).some((sg) => sg.layout === 'split')) && (
                                     <>
+                                        <p className="text-sm font-semibold">Facecam box</p>
                                         <FacecamPicker video={videoRef.current} facecam={style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 }} onChange={(r) => setStyle({ facecam: r })} />
                                         <button className="btn-ghost" disabled={!video} onClick={findFacecam}>Find the facecam automatically</button>
                                         <Field label={`Facecam height: ${Math.round((style.splitRatio ?? 0.4) * 100)}%`}>
@@ -595,10 +655,10 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 </div>
                                 <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
                                     <p className="text-sm font-semibold">Jump cuts</p>
-                                    <p className="text-xs text-muted">Removes pauses between words so the clip moves faster. Cut parts show striped in the timeline; select one and press Restore to undo.</p>
+                                    <p className="text-xs text-muted">Removes pauses between words so the clip moves faster. Each kept piece becomes its own part on V1. Undo with Ctrl+Z.</p>
                                     <div className="flex gap-2">
                                         <button className="tl-btn" onClick={removeSilences}>⏩ Remove silences</button>
-                                        {(clip.cuts?.length ?? 0) > 0 && <button className="tl-btn" onClick={() => editClip({ cuts: [], splits: [] })}>Restore everything</button>}
+                                        {segmentsOf(clip).length > 1 && <button className="tl-btn" onClick={() => editClip(withSegs(clip, [{ ...segmentsOf(clip)[0], start: clip.start, end: clip.end }]))}>Restore everything</button>}
                                     </div>
                                 </div>
                                 <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
@@ -744,7 +804,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 <p className="text-sm text-muted">
                                     Final length: <b className="text-white">{outLen.toFixed(1)}s</b>
                                     {clip.freeze?.seconds ? ` + ${clip.freeze.seconds}s freeze` : ''}
-                                    {(clip.cuts?.length ?? 0) > 0 ? ` (${(clip.end - clip.start - outLen).toFixed(1)}s cut out)` : ''}
+                                    {clip.end - clip.start - outLen > 0.05 ? ` (${(clip.end - clip.start - outLen).toFixed(1)}s cut out)` : ''}
                                 </p>
                                 <Field label="Quality">
                                     <Segmented value={String(quality)} onChange={(v) => setQuality(+v as 720 | 1080)} items={[{ id: '720', label: '720p · faster' }, { id: '1080', label: '1080p · sharper' }]} />
@@ -763,29 +823,34 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                 </section>
             </div>
 
+            <div className="ed-timeline">
             <Timeline
+                ref={timelineRef}
                 clip={clip}
+                style={style}
                 duration={project.duration}
-                time={time}
                 playing={playing}
                 groups={groups}
                 energy={project.transcript?.energy}
                 events={events}
                 bleeps={bleeps}
                 thumbs={thumbs}
+                hasMusic={!!project.music}
                 selection={selection}
-                setSelection={setSelection}
-                onSeek={seek}
-                onTogglePlay={togglePlay}
-                onChange={editClip}
-                onUndo={undo}
+                setSelection={tl.select}
+                getOutTime={tl.outTime}
+                onSeekOut={tl.seekOut}
+                onTogglePlay={tl.togglePlay}
+                onPlay={tl.play}
+                onPause={tl.pause}
+                onBeginEdit={tl.beginEdit}
+                onUpdate={tl.update}
+                onUndo={tl.undo}
+                onRedo={tl.redo}
                 canUndo={historyLen > 0}
-                onRedo={redo}
                 canRedo={futureLen > 0}
-                onRemoveSilences={removeSilences}
-                outputTime={outNow}
-                outputLength={outLen}
             />
+            </div>
 
             {selCaption && selection?.type === 'caption' && (
                 <CaptionEditor
@@ -1167,7 +1232,7 @@ function currentFx(clip: Clip): Preset['fx'] {
         shakes: (clip.shakes?.length ?? 0) > 0,
         replay: !!clip.replay,
         zoomLaughs: (clip.zooms?.length ?? 0) > 0,
-        silences: (clip.cuts?.length ?? 0) > 0
+        silences: segmentsOf(clip).length > 1
     };
 }
 
@@ -1179,7 +1244,7 @@ function applyFx(c: Clip, fx: Preset['fx'], events: ReturnType<typeof autoSfx> e
         const laughs = events.filter((e) => (e.type === 'reaction' || e.type === 'chat') && e.start > c.start + 1 && e.start < c.end);
         n.zooms = laughs.map((e) => ({ start: Math.max(c.start, e.start - 1.2), end: Math.min(c.end, e.start + 0.8), scale: 1.3 }));
     }
-    if (fx.silences && !(c.cuts?.length)) n.cuts = mergeSpans(silenceCuts(c, words));
+    if (fx.silences && segmentsOf(c).length <= 1) n = { ...n, ...withSegs(c, removeRanges(segmentsOf(c), silenceCuts(c, words))) };
     n.sfx = fx.sfx ? (c.sfx?.length ? c.sfx : autoSfx(n, events)) : [];
     n.shakes = fx.shakes ? (c.shakes?.length ? c.shakes : autoShakes(n, events)) : [];
     n.replay = fx.replay ? c.replay ?? autoReplay(n, events) : undefined;
@@ -1370,5 +1435,90 @@ Reply with ONLY a JSON object like:
             </button>
             {msg && <p className="text-xs text-accent">{msg}</p>}
         </div>
+    );
+}
+
+/** Layout settings for the parts selected on V1 of the timeline. */
+function PartInspector({ clip, style, selection, editClip, setClip }: { clip: Clip; style: StyleSettings; selection: Selection; editClip: (p: Partial<Clip>) => void; setClip: (p: Partial<Clip>) => void }) {
+    const segs = segmentsOf(clip);
+    const ids = selection?.type === 'segs' ? selection.ids : [];
+    const sel = segs.filter((s) => ids.includes(s.id));
+    if (!sel.length)
+        return (
+            <div className="ed-card ed-hint">
+                <Layers size={16} className="shrink-0 text-accent" />
+                <p>
+                    <b>Different layout for each moment:</b> cut the video with <kbd>C</kbd> (razor) or <kbd>Ctrl+K</kbd>, then click a part on the <b>V1</b> track to give it its own layout, like facecam + gameplay for one moment and full screen for the next.
+                </p>
+            </div>
+        );
+    const first = sel[0];
+    const same = sel.every((s) => s.layout === first.layout);
+    const current = same ? first.layout ?? 'default' : '';
+    const effective = same ? first.layout ?? style.layout : null;
+    const crop = first.cropX ?? style.cropX;
+    const update = (patch: (s: (typeof segs)[number]) => (typeof segs)[number], undoable = true) => {
+        const next = withSegs(clip, segs.map((s) => (ids.includes(s.id) ? patch(s) : s)));
+        undoable ? editClip(next) : setClip(next);
+    };
+    const len = sel.reduce((a, s) => a + s.end - s.start, 0);
+    return (
+        <div className="ed-card ed-card-accent">
+            <div className="flex items-center justify-between">
+                <p className="flex items-center gap-2 text-sm font-semibold">
+                    <Layers size={15} className="text-accent" />
+                    {sel.length > 1 ? `${sel.length} parts selected` : `Part ${segs.indexOf(first) + 1} of ${segs.length}`}
+                </p>
+                <span className="font-mono text-xs text-white/45">{len.toFixed(1)}s</span>
+            </div>
+            <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                {LAYOUTS.map((l) => (
+                    <button key={l.id} className={`ed-choice ${current === l.id ? 'ed-choice-on' : ''}`} onClick={() => update((s) => ({ ...s, layout: l.id === 'default' ? undefined : l.id }))}>
+                        <LayoutGlyph id={l.id === 'default' ? style.layout : l.id} />
+                        <span>
+                            {l.label}
+                            {l.id === 'default' && <small className="block text-white/40">now: {LAYOUTS.find((x) => x.id === style.layout)?.label}</small>}
+                        </span>
+                    </button>
+                ))}
+            </div>
+            {(effective === 'split' || effective === 'manual') && (
+                <Field label={effective === 'split' ? 'Gameplay position for this part' : 'Position for this part'}>
+                    <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.01}
+                        value={crop}
+                        onPointerDown={() => update((s) => s)}
+                        onChange={(e) => update((s) => ({ ...s, cropX: +e.target.value }), false)}
+                        className="w-full accent-[var(--color-accent)]"
+                    />
+                </Field>
+            )}
+            {effective === 'split' && !style.facecam && <p className="text-xs text-amber-200">Set the facecam box below so this part knows where your face is.</p>}
+            <p className="text-xs text-white/45">Tip: shift-click parts to select several. Right-click a part for the same options.</p>
+        </div>
+    );
+}
+
+function LayoutGlyph({ id }: { id: Layout | 'default' }) {
+    return (
+        <span className="ed-glyph" aria-hidden>
+            {id === 'split' ? (
+                <>
+                    <i style={{ height: '40%' }} className="bg-accent/70" />
+                    <i style={{ height: '60%' }} className="bg-white/35" />
+                </>
+            ) : id === 'fit' ? (
+                <>
+                    <i style={{ height: '30%' }} className="bg-white/10" />
+                    <i style={{ height: '40%' }} className="bg-white/45" />
+                    <i style={{ height: '30%' }} className="bg-white/10" />
+                </>
+            ) : (
+                <i style={{ height: '100%' }} className={id === 'auto' ? 'bg-sky-300/50' : 'bg-white/45'} />
+            )}
+        </span>
     );
 }
