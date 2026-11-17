@@ -291,6 +291,15 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             v.play().catch(() => {});
         } else v.pause();
     }
+    /** select the part under the playhead, so layout changes go to that part only */
+    function selectPartHere() {
+        if (segmentsOf(clip).length < 2 || selection?.type === 'segs') return;
+        const v = videoRef.current;
+        const t = v ? v.currentTime : clip.start;
+        const segs = segmentsOf(clip);
+        const sg = segs.find((x) => t >= x.start && t < x.end) ?? segs.find((x) => x.start >= t) ?? segs[segs.length - 1];
+        setSelection({ type: 'segs', ids: [sg.id] });
+    }
     /** seek in sequence time (the finished video) */
     function seekOut(outT: number) {
         const len = outputDuration(clip);
@@ -496,7 +505,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                 <section className="ed-inspector">
                     <div className="ed-tabs" role="tablist">
                         {TABS.map((t) => (
-                            <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)} className={`ed-tab ${tab === t.id ? 'ed-tab-on' : ''}`}>
+                            <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => { setTab(t.id); if (t.id === 'layout') selectPartHere(); }} className={`ed-tab ${tab === t.id ? 'ed-tab-on' : ''}`}>
                                 <t.icon size={15} />
                                 <span>{t.label}</span>
                             </button>
@@ -563,13 +572,28 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 <Field label="Aspect ratio">
                                     <Segmented value={style.aspect} onChange={(v) => setStyle({ aspect: v as Aspect })} items={[{ id: '9:16', label: '9:16' }, { id: '1:1', label: '1:1' }, { id: '16:9', label: '16:9' }]} />
                                 </Field>
-                                <Field label="Default layout (parts without their own layout)">
-                                    <Segmented
-                                        value={style.layout}
-                                        onChange={(v) => setStyle({ layout: v as Layout })}
-                                        items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit + blur' }]}
-                                    />
-                                </Field>
+                                {segmentsOf(clip).length > 1 ? (
+                                    // with several parts, the only way to change a layout is per part (or all parts on purpose)
+                                    selection?.type !== 'segs' && (
+                                        <div className="ed-card">
+                                            <p className="text-sm font-semibold">Set every part at once</p>
+                                            <p className="text-xs text-white/50">This clip is cut into {segmentsOf(clip).length} parts. To change only one, click it on the V1 track instead.</p>
+                                            <Segmented
+                                                value=""
+                                                onChange={(v) => editClip(withSegs(clip, segmentsOf(clip).map((sg) => ({ ...sg, layout: v as Layout }))))}
+                                                items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit + blur' }]}
+                                            />
+                                        </div>
+                                    )
+                                ) : (
+                                    <Field label="Layout">
+                                        <Segmented
+                                            value={style.layout}
+                                            onChange={(v) => setStyle({ layout: v as Layout })}
+                                            items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit + blur' }]}
+                                        />
+                                    </Field>
+                                )}
                                 {style.layout === 'auto' && (
                                     <div className="flex flex-col gap-2 text-sm">
                                         <p className="text-muted">{clip.track ? 'The frame follows the main speaker’s face.' : 'No face was found in this clip yet, so it stays centred.'}</p>
@@ -1467,7 +1491,7 @@ function PartInspector({ clip, style, selection, editClip, setClip }: { clip: Cl
             <div className="flex items-center justify-between">
                 <p className="flex items-center gap-2 text-sm font-semibold">
                     <Layers size={15} className="text-accent" />
-                    {sel.length > 1 ? `${sel.length} parts selected` : `Part ${segs.indexOf(first) + 1} of ${segs.length}`}
+                    {sel.length > 1 ? `Layout for ${sel.length} selected parts` : `Layout for part ${segs.indexOf(first) + 1} only`}
                 </p>
                 <span className="font-mono text-xs text-white/45">{len.toFixed(1)}s</span>
             </div>
