@@ -4,7 +4,7 @@ import { projectEvents } from '../lib/audio';
 import { bleepSpans } from '../lib/censor';
 import { buildSrt, displayWords, groupWords } from '../lib/captions';
 import { drawScene, drawVideoLayer, roundRect, stickerBox, wrap } from '../lib/draw';
-import { autoReplay, autoSfx, autoShakes, replayLength } from '../lib/fx';
+import { allSfx, autoReplay, autoSfx, autoShakes, cutTimes, PIP_DEFAULT, replayLength } from '../lib/fx';
 import { playSfx, SFX_KINDS } from '../lib/sfx';
 import { analyseClip, detectFacecam } from '../lib/faces';
 import { outputSize } from '../lib/geometry';
@@ -150,7 +150,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                     // sound effects the playhead just passed
                     const prev = lastTimeRef.current;
                     if (v.currentTime > prev && v.currentTime - prev < 0.5) {
-                        for (const fx of s.clip.sfx ?? []) if (fx.t > prev && fx.t <= v.currentTime) playSfx(fx.kind, s.style.sfxVolume ?? 0.8).catch(() => {});
+                        for (const fx of allSfx(s.clip)) if (fx.t > prev && fx.t <= v.currentTime) playSfx(fx.kind, s.style.sfxVolume ?? 0.8).catch(() => {});
                     }
                 }
                 lastTimeRef.current = v.currentTime;
@@ -581,7 +581,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                             <Segmented
                                                 value=""
                                                 onChange={(v) => editClip(withSegs(clip, segmentsOf(clip).map((sg) => ({ ...sg, layout: v as Layout }))))}
-                                                items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit + blur' }]}
+                                                items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'pip', label: 'PiP' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit' }]}
                                             />
                                         </div>
                                     )
@@ -590,7 +590,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                         <Segmented
                                             value={style.layout}
                                             onChange={(v) => setStyle({ layout: v as Layout })}
-                                            items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit + blur' }]}
+                                            items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'pip', label: 'PiP' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit' }]}
                                         />
                                     </Field>
                                 )}
@@ -600,7 +600,8 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                         <button className="btn-ghost" disabled={!video} onClick={reframe}>Re-detect speaker</button>
                                     </div>
                                 )}
-                                {(style.layout === 'split' || segmentsOf(clip).some((sg) => sg.layout === 'split')) && (
+                                {(style.layout === 'pip' || segmentsOf(clip).some((sg) => sg.layout === 'pip')) && <PipSettingsPanel style={style} setStyle={setStyle} />}
+                                {(['split', 'pip'] as Layout[]).some((l) => style.layout === l || segmentsOf(clip).some((sg) => sg.layout === l)) && (
                                     <>
                                         <p className="text-sm font-semibold">Facecam box</p>
                                         <FacecamPicker video={videoRef.current} facecam={style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 }} onChange={(r) => setStyle({ facecam: r })} />
@@ -684,6 +685,30 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                         <button className="tl-btn" onClick={removeSilences}>⏩ Remove silences</button>
                                         {segmentsOf(clip).length > 1 && <button className="tl-btn" onClick={() => editClip(withSegs(clip, [{ ...segmentsOf(clip)[0], start: clip.start, end: clip.end }]))}>Restore everything</button>}
                                     </div>
+                                </div>
+                                <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+                                    <p className="text-sm font-semibold">Transitions at cuts</p>
+                                    <p className="text-xs text-muted">
+                                        {cutTimes(clip).length
+                                            ? `Adds an effect at each of the ${cutTimes(clip).length} cut${cutTimes(clip).length > 1 ? 's' : ''} between parts, so jumps feel deliberate.`
+                                            : 'Cut the clip into parts first (C or Ctrl+K in the timeline, or Remove silences). Every cut then gets this effect.'}
+                                    </p>
+                                    <Segmented
+                                        value={clip.transition?.kind ?? 'none'}
+                                        onChange={(v) => editClip({ transition: { kind: v as NonNullable<Clip['transition']>['kind'], sound: clip.transition?.sound ?? null } })}
+                                        items={[{ id: 'none', label: 'None' }, { id: 'flash', label: '✦ Flash' }, { id: 'shake', label: '⚡ Shake' }, { id: 'zoom', label: '🔍 Punch zoom' }]}
+                                    />
+                                    <Field label="Sound at each cut">
+                                        <Segmented
+                                            value={clip.transition?.sound ?? 'none'}
+                                            onChange={(v) => {
+                                                const sound = v === 'none' ? null : (v as SfxKind);
+                                                if (sound) playSfx(sound, style.sfxVolume ?? 0.8).catch(() => {});
+                                                editClip({ transition: { kind: clip.transition?.kind ?? 'none', sound } });
+                                            }}
+                                            items={[{ id: 'none', label: 'None' }, ...SFX_KINDS.map((k) => ({ id: k.id, label: `${k.icon} ${k.label}` }))]}
+                                        />
+                                    </Field>
                                 </div>
                                 <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
                                     <Toggle
@@ -1510,8 +1535,8 @@ function PartInspector({ clip, style, selection, editClip, setClip }: { clip: Cl
                     </button>
                 ))}
             </div>
-            {(effective === 'split' || effective === 'manual') && (
-                <Field label={effective === 'split' ? 'Gameplay position for this part' : 'Position for this part'}>
+            {(effective === 'split' || effective === 'manual' || effective === 'pip') && (
+                <Field label={effective === 'manual' ? 'Position for this part' : 'Gameplay position for this part'}>
                     <input
                         type="range"
                         min={0}
@@ -1524,7 +1549,7 @@ function PartInspector({ clip, style, selection, editClip, setClip }: { clip: Cl
                     />
                 </Field>
             )}
-            {effective === 'split' && !style.facecam && <p className="text-xs text-amber-200">Set the facecam box below so this part knows where your face is.</p>}
+            {(effective === 'split' || effective === 'pip') && !style.facecam && <p className="text-xs text-amber-200">Set the facecam box below so this part knows where your face is.</p>}
             <p className="text-xs text-white/45">Tip: shift-click parts to select several. Right-click a part for the same options.</p>
         </div>
     );
@@ -1533,7 +1558,11 @@ function PartInspector({ clip, style, selection, editClip, setClip }: { clip: Cl
 function LayoutGlyph({ id }: { id: Layout | 'default' }) {
     return (
         <span className="ed-glyph" aria-hidden>
-            {id === 'split' ? (
+            {id === 'pip' ? (
+                <span className="relative block h-full w-full bg-white/35">
+                    <i className="absolute top-0.5 left-0.5 size-2 rounded-full bg-accent" />
+                </span>
+            ) : id === 'split' ? (
                 <>
                     <i style={{ height: '40%' }} className="bg-accent/70" />
                     <i style={{ height: '60%' }} className="bg-white/35" />
@@ -1561,4 +1590,23 @@ function transcriptText(words: Word[], clip: Clip): string {
         out += i === 0 ? w.text.trim() : (gap > 1.5 ? '\n\n' : ' ') + w.text.trim();
     });
     return out + '\n';
+}
+
+function PipSettingsPanel({ style, setStyle }: { style: StyleSettings; setStyle: (p: Partial<StyleSettings>) => void }) {
+    const pp = style.pip ?? PIP_DEFAULT;
+    const set = (patch: Partial<typeof pp>) => setStyle({ pip: { ...pp, ...patch } });
+    return (
+        <div className="ed-card">
+            <p className="text-sm font-semibold">Facecam bubble (PiP)</p>
+            <Field label="Corner">
+                <Segmented value={pp.corner} onChange={(v) => set({ corner: v as typeof pp.corner })} items={[{ id: 'tl', label: '↖ Top left' }, { id: 'tr', label: '↗ Top right' }, { id: 'bl', label: '↙ Bottom left' }, { id: 'br', label: '↘ Bottom right' }]} />
+            </Field>
+            <Field label="Shape">
+                <Segmented value={pp.shape} onChange={(v) => set({ shape: v as typeof pp.shape })} items={[{ id: 'circle', label: '● Circle' }, { id: 'rounded', label: '▢ Rounded' }]} />
+            </Field>
+            <Field label={`Size: ${Math.round(pp.size * 100)}% of the width`}>
+                <input type="range" min={0.2} max={0.55} step={0.01} value={pp.size} onChange={(e) => set({ size: +e.target.value })} className="w-full accent-[var(--color-accent)]" />
+            </Field>
+        </div>
+    );
 }

@@ -28,7 +28,7 @@ export function faceToPos(faceX: number, vw: number, vh: number, aspect: Aspect)
 
 /** Crop keyframes (absolute time -> crop position) for the current layout. */
 export function cropPath(clip: Clip, style: StyleSettings, vw: number, vh: number): { t: number; x: number }[] {
-    if (style.layout === 'manual') return [{ t: clip.start, x: style.cropX }];
+    if (style.layout === 'manual' || style.layout === 'pip') return [{ t: clip.start, x: style.cropX }];
     if (style.layout !== 'auto' || !clip.track?.length) return [{ t: clip.start, x: 0.5 }];
     return clip.track.map((p) => ({ t: p.t, x: faceToPos(p.x, vw, vh, style.aspect) }));
 }

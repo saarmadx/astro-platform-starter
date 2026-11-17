@@ -56,6 +56,8 @@ export type Clip = {
     replay?: { start: number; end: number; speed: number };
     /** text stickers placed on the video */
     stickers?: Sticker[];
+    /** an effect (and optional sound) at every cut between parts */
+    transition?: { kind: 'none' | 'flash' | 'shake' | 'zoom'; sound?: SfxKind | null };
     /** translated captions, one line per caption block (absolute source times) */
     translation?: { language: string; lines: { start: number; end: number; text: string }[] };
 };
@@ -83,7 +85,8 @@ export type Span = { start: number; end: number };
 export type Seg = { id: string; start: number; end: number; layout?: Layout; cropX?: number };
 
 export type Aspect = '9:16' | '1:1' | '16:9';
-export type Layout = 'auto' | 'manual' | 'fit' | 'split';
+export type Layout = 'auto' | 'manual' | 'fit' | 'split' | 'pip';
+export type PipSettings = { corner: 'tl' | 'tr' | 'bl' | 'br'; size: number; shape: 'circle' | 'rounded' };
 export type CaptionPosition = 'top' | 'middle' | 'bottom';
 
 export type Brand = {
@@ -107,6 +110,8 @@ export type StyleSettings = {
     facecam?: { x: number; y: number; w: number; h: number };
     /** share of the height the facecam takes in 'split' layout */
     splitRatio?: number;
+    /** small facecam over full gameplay, for layout === 'pip' */
+    pip?: PipSettings;
     progressBar?: boolean;
     /** replace swear words in captions with ****; bleep also beeps the audio */
     censor?: 'off' | 'captions' | 'bleep';

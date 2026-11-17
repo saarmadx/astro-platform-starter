@@ -1,6 +1,6 @@
 // One-click auto placement for the optional effects.
-import { keptSegments } from './timeline';
-import type { AudioEvent, Clip, SfxKind } from './types';
+import { keptSegments, segmentsOf } from './timeline';
+import type { AudioEvent, Clip, PipSettings, SfxKind, Span } from './types';
 
 const inside = (clip: Clip, t: number) => t > clip.start + 0.3 && t < clip.end - 0.2;
 
@@ -33,4 +33,37 @@ export function autoReplay(clip: Clip, events: AudioEvent[]): { start: number; e
 export function replayLength(clip: Clip): number {
     const r = clip.replay;
     return r && r.end > r.start ? (r.end - r.start) / r.speed : 0;
+}
+
+export const PIP_DEFAULT: PipSettings = { corner: 'tl', size: 0.36, shape: 'circle' };
+
+/** Source times where one part ends and the next begins. */
+export function cutTimes(clip: Clip): number[] {
+    return segmentsOf(clip).slice(1).map((s) => s.start);
+}
+
+/** Shakes and flashes, including the ones the transition adds at every cut. */
+export function allShakes(clip: Clip): NonNullable<Clip['shakes']> {
+    const base = clip.shakes ?? [];
+    const tr = clip.transition;
+    if (!tr || (tr.kind !== 'flash' && tr.kind !== 'shake')) return base;
+    return [...base, ...cutTimes(clip).map((t) => ({ t, kind: tr.kind as 'flash' | 'shake' }))];
+}
+
+/** Zooms, including the quick punch-in a "zoom" transition adds at every cut. */
+export function allZooms(clip: Clip): (Span & { scale: number })[] {
+    const base = clip.zooms ?? [];
+    if (clip.transition?.kind !== 'zoom') return base;
+    const segs = segmentsOf(clip);
+    const punches = segs.slice(1).map((s) => ({ start: s.start, end: Math.min(s.end, s.start + 0.3), scale: 1.2 }));
+    // a punch wins over a longer zoom that covers the same moment
+    return [...punches, ...base];
+}
+
+/** Sound effects, including the transition sound at every cut. */
+export function allSfx(clip: Clip): { t: number; kind: SfxKind }[] {
+    const base = clip.sfx ?? [];
+    const snd = clip.transition?.sound;
+    if (!snd) return base;
+    return [...base, ...cutTimes(clip).map((t) => ({ t, kind: snd }))].sort((a, b) => a.t - b.t);
 }

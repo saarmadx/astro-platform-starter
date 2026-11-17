@@ -2,8 +2,8 @@ import { FFmpeg, FFFSType } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { bleepSpans } from './censor';
 import { buildAss, captionSize, captionY, displayWords, emojiEvents, groupWords } from './captions';
-import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiPng, textOverlayPng } from './draw';
-import { replayLength } from './fx';
+import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiPng, pipBox, textOverlayPng } from './draw';
+import { allShakes, allSfx, allZooms, replayLength } from './fx';
 import { sfxWav } from './sfx';
 import { cropPath, cropWindow, outputSize } from './geometry';
 import { FONT_FILES, getTemplate } from './templates';
@@ -271,6 +271,20 @@ function layout(
         g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${W}:${TH}:force_original_aspect_ratio=increase,crop=${W}:${TH},setsar=1${zp(W, TH)}[top]`);
         g.push(`[fb]crop=${gw}:${gh}:${Math.round((vw - gw) * style.cropX)}:${Math.round((vh - gh) / 2)},scale=${W}:${BH}:force_original_aspect_ratio=increase,crop=${W}:${BH},setsar=1${zp(W, BH)}[bot]`);
         g.push(`[top][bot]vstack=inputs=2,drawbox=x=0:y=${TH - 2}:w=${W}:h=4:color=black:t=fill[v0]`);
+    } else if (style.layout === 'pip') {
+        // full gameplay with the facecam in a round (or rounded) bubble with a white rim
+        const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
+        const b = pipBox(style, W, H);
+        const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
+        const R = b.s / 2;
+        const r = Math.round(b.s * 0.14);
+        const d = b.shape === 'circle' ? `hypot(X-${R},Y-${R})` : `hypot(max(abs(X-${R})-${R - r},0),max(abs(Y-${R})-${R - r},0))`;
+        const rr = b.shape === 'circle' ? R : r;
+        const rim = (c: string) => `if(gte(${d},${rr - b.border}),255,${c}(X,Y))`;
+        g.push(`[${v}]split[fa][fb]`);
+        g.push(`[fb]crop=${even(cw)}:${even(ch)}:${Math.round((vw - cw) * style.cropX)}:${Math.round(y)},scale=${W}:${H}:flags=bicubic,setsar=1${zp(W, H)}[bg]`);
+        g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${b.s}:${b.s}:force_original_aspect_ratio=increase,crop=${b.s}:${b.s},setsar=1,format=rgba,geq=r='${rim('r')}':g='${rim('g')}':b='${rim('b')}':a='if(lte(${d},${rr}),255,0)'[pip]`);
+        g.push(`[bg][pip]overlay=${b.x}:${b.y}[v0]`);
     } else {
         const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
         const maxX = Math.max(0, vw - cw);
@@ -359,7 +373,7 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
     g.push(`[${v}]fps=${FPS},setsar=1[vf]`);
     v = 'vf';
 
-    const zooms = (clip.zooms ?? [])
+    const zooms = allZooms(clip)
         .map((z) => ({ start: rel(outT(z.start)), end: rel(outT(z.end)), scale: z.scale }))
         .filter((z) => z.end > 0 && z.start < partLen && z.end - z.start > 0.05);
     const zoomAt = (ft: string) => {
@@ -368,14 +382,14 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
         for (const z of zooms) expr = `if(between(${ft},${z.start.toFixed(2)},${z.end.toFixed(2)}),${z.scale.toFixed(3)},${expr})`;
         return expr;
     };
-    const shakeTimes = (clip.shakes ?? []).filter((s) => s.kind !== 'flash').map((s) => rel(outT(s.t))).filter((a) => a > -0.5 && a < partLen);
+    const shakeTimes = allShakes(clip).filter((s) => s.kind !== 'flash').map((s) => rel(outT(s.t))).filter((a) => a > -0.5 && a < partLen);
     const shake = shakeTimes.length ? shakeTimes.map((a) => `between(in/${FPS},${a.toFixed(2)},${(a + 0.45).toFixed(2)})`).join('+') : null;
     // every piece has a single framing (pieces are split where a part's layout changes)
     const ls = styleAt(clip, style, toSource(clip, (ws + Math.max(ws, Math.min(we, tm.total) - 0.01)) / 2, segs));
     const cropPoints = cropPath(clip, ls, o.videoWidth, o.videoHeight).map((p) => ({ t: rel(outT(Math.max(clip.start, p.t))), x: p.x }));
     v = layout(o, g, v, W, H, zoomAt, shake, cropPoints, ls);
 
-    for (const [i, s] of (clip.shakes ?? []).filter((s) => s.kind !== 'shake').entries()) {
+    for (const [i, s] of allShakes(clip).filter((s) => s.kind !== 'shake').entries()) {
         const a = rel(outT(s.t));
         if (a < -0.2 || a > partLen) continue;
         g.push(`[${v}]drawbox=x=0:y=0:w=iw:h=ih:color=white@0.6:t=fill:enable='between(t,${a.toFixed(2)},${(a + 0.09).toFixed(2)})'[vfl${i}]`);
@@ -620,7 +634,7 @@ export async function renderClip(o: RenderOptions): Promise<Blob> {
         // sound in one pass, then join everything on the first engine (no re-encoding)
         const { ff, input } = await mountOn(0, o.file);
         const sfx: { path: string; at: number }[] = [];
-        for (const [i, s] of (clip.sfx ?? []).entries()) {
+        for (const [i, s] of allSfx(clip).entries()) {
             const at = toOutput(clip, s.t);
             if (at === null) continue;
             const path = `/sfx_${i}.wav`;

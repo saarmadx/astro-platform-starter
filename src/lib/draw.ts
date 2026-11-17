@@ -5,6 +5,7 @@ import { captionSize, captionY, displayText, emojiEvents, groupTimes, type DWord
 import { aspectRatio, cropPath, cropWindow, posAt } from './geometry';
 import { getTemplate, TITLE_FONT } from './templates';
 import { outputDuration, styleAt, toOutputClamped } from './timeline';
+import { allShakes, allZooms, PIP_DEFAULT } from './fx';
 import type { Brand, Clip, Sticker, StyleSettings } from './types';
 
 export type Scene = {
@@ -95,7 +96,7 @@ export function shakeAt(clip: Clip, t: number, W: number): { dx: number; dy: num
     let dx = 0;
     let dy = 0;
     let flash = 0;
-    for (const s of clip.shakes ?? []) {
+    for (const s of allShakes(clip)) {
         const age = t - s.t;
         if (age < 0 || age > 0.45) continue;
         if (s.kind !== 'flash') {
@@ -119,7 +120,7 @@ export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w
 }
 
 export function zoomAt(clip: Clip, t: number): number {
-    const z = (clip.zooms ?? []).find((s) => t >= s.start && t < s.end);
+    const z = allZooms(clip).find((s) => t >= s.start && t < s.end);
     return z ? z.scale : 1;
 }
 
@@ -185,6 +186,48 @@ export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoEl
     const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
     const x = (vw - cw) * posAt(cropPath(clip, style, vw, vh), t);
     drawRegion(ctx, video, x, y, cw, ch, 0, 0, W, H, zoom);
+
+    if (style.layout === 'pip') {
+        // facecam bubble in a corner over the full gameplay
+        const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
+        const b = pipBox(style, W, H);
+        const fw = fc.w * vw;
+        const fh = fc.h * vh;
+        const side = Math.min(fw, fh);
+        ctx.save();
+        pipPath(ctx, b);
+        ctx.clip();
+        ctx.drawImage(video, fc.x * vw + (fw - side) / 2, fc.y * vh + (fh - side) / 2, side, side, b.x, b.y, b.s, b.s);
+        ctx.restore();
+        ctx.save();
+        ctx.lineWidth = b.border;
+        ctx.strokeStyle = '#fff';
+        pipPath(ctx, { ...b, x: b.x + b.border / 2, y: b.y + b.border / 2, s: b.s - b.border });
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+/** Where the picture-in-picture facecam sits (same maths as the export). */
+export function pipBox(style: StyleSettings, W: number, H: number) {
+    const pp = style.pip ?? PIP_DEFAULT;
+    const s = 2 * Math.round((W * pp.size) / 2);
+    const m = 2 * Math.round((W * 0.04) / 2);
+    return {
+        x: pp.corner.endsWith('l') ? m : W - s - m,
+        // top corners sit below the hook title, bottom corners above the progress bar
+        y: pp.corner.startsWith('t') ? 2 * Math.round((H * 0.14) / 2) : H - s - 2 * Math.round(Math.max(m, H * 0.05) / 2),
+        s,
+        border: Math.max(3, Math.round(s * 0.025)),
+        shape: pp.shape
+    };
+}
+
+function pipPath(ctx: CanvasRenderingContext2D, b: { x: number; y: number; s: number; shape: 'circle' | 'rounded' }) {
+    if (b.shape === 'circle') {
+        ctx.beginPath();
+        ctx.arc(b.x + b.s / 2, b.y + b.s / 2, b.s / 2, 0, Math.PI * 2);
+    } else roundRect(ctx, b.x, b.y, b.s, b.s, b.s * 0.14);
 }
 
 export function drawScene(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, s: Scene) {

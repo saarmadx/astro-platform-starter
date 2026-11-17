@@ -70,6 +70,7 @@ type Props = {
 export const LAYOUTS: { id: Layout | 'default'; label: string; short: string }[] = [
     { id: 'default', label: 'Project default', short: 'Default' },
     { id: 'split', label: 'Facecam + gameplay', short: 'Facecam' },
+    { id: 'pip', label: 'Gameplay + facecam bubble', short: 'PiP' },
     { id: 'auto', label: 'Full screen, follow speaker', short: 'Full' },
     { id: 'manual', label: 'Full screen, fixed position', short: 'Fixed' },
     { id: 'fit', label: 'Whole frame + blur', short: 'Fit' }
@@ -622,6 +623,12 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                                 </button>
                             ) : null
                         )}
+                        {clip.transition && (clip.transition.kind !== 'none' || clip.transition.sound) &&
+                            segOut.slice(1).map((r) => (
+                                <span key={`tr${r.seg.id}`} className="tl-trans" style={{ top: top('fx') + 9, left: X(r.start) - 8 }} title={`Transition: ${clip.transition!.kind}${clip.transition!.sound ? ` + ${clip.transition!.sound}` : ''}`}>
+                                    {clip.transition!.kind === 'flash' ? '✦' : clip.transition!.kind === 'shake' ? '⚡' : clip.transition!.kind === 'zoom' ? '🔍' : '♪'}
+                                </span>
+                            ))}
                         {replay > 0 && (
                             <div className="tl-item tl-replay" style={{ top: top('fx') + 4, height: trackH('fx') - 8, left: X(outLen), width: replay * pps }} onPointerDown={(e) => e.stopPropagation()} title="Instant replay (plays after the clip)">
                                 <FastForward size={11} className="rotate-180" /> <span className="truncate">Replay</span>
