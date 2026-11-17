@@ -6,7 +6,7 @@ import { chatSpikes, parseChat } from '../lib/chat';
 import { analyseClip } from '../lib/faces';
 import { cancelTranscription, cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
-import type { Brand, Clip, Project, StyleSettings } from '../lib/types';
+import type { Aspect, Brand, Clip, Project, StyleSettings } from '../lib/types';
 import BrandKit from './BrandKit';
 import Editor from './Editor';
 import { Home as HomeIcon, Palette, Scissors } from 'lucide-react';
@@ -127,6 +127,28 @@ export default function Studio() {
                 p = { ...p, transcript, partial: undefined };
                 save(p);
             }
+            if (o.captionsOnly) {
+                // captions only: one "clip" that is the whole video, opened straight in the editor
+                const whole: Clip = {
+                    id: 'whole',
+                    title: p.name,
+                    start: 0,
+                    end: p.duration,
+                    hook: '',
+                    score: 100,
+                    subscores: { hook: 0, flow: 0, value: 0, shareability: 0 },
+                    reason: 'The whole video with captions',
+                    category: 'Captions',
+                    description: '',
+                    hashtags: [],
+                    keywords: [],
+                    emojis: []
+                };
+                p = { ...p, clips: [whole], status: 'ready' };
+                save(p);
+                if (live()) setView((v) => (v.name === 'project' && v.id === p.id ? { name: 'editor', id: p.id, clipId: 'whole' } : v));
+                return;
+            }
             const picker = o.picker ?? 'laughs';
             if (picker === 'chat') {
                 // wait for the creator to paste Claude's answer (see ProjectView)
@@ -217,7 +239,14 @@ export default function Studio() {
             createdAt: Date.now(),
             status: 'transcribing',
             clips: [],
-            style: { ...DEFAULT_STYLE, aspect: input.aspect, template: input.template, highlight: input.highlight },
+            style: {
+                ...DEFAULT_STYLE,
+                template: input.template,
+                highlight: input.highlight,
+                aspect: input.keepShape ? closestAspect(meta.width, meta.height) : input.aspect,
+                // captions only in the video's own shape: show the whole frame, nothing cropped
+                ...(input.keepShape ? { layout: 'fit' as const } : {})
+            },
             options: input.options,
             chat: input.chatFile ? { name: input.chatFile.name, spikes: chatSpikes(parseChat(await input.chatFile.text())) } : undefined
         };
@@ -355,4 +384,9 @@ function NavButton({ active, onClick, children }: { active: boolean; onClick: ()
             {children}
         </button>
     );
+}
+
+function closestAspect(w: number, h: number): Aspect {
+    const r = w / Math.max(1, h);
+    return r > 1.4 ? '16:9' : r < 0.75 ? '9:16' : '1:1';
 }

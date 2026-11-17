@@ -121,6 +121,8 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
     const [tool, setTool] = useState<'select' | 'razor'>('select');
     const [snap, setSnap] = useState(true);
     const [menu, setMenu] = useState<null | { x: number; y: number; segId: string }>(null);
+    const [viewX, setViewX] = useState(0);
+    const scrollRaf = useRef(0);
     const drag = useRef<null | { kind: string; startX: number; orig: Clip; index?: number; segId?: string; moved: boolean }>(null);
     const outNow = useRef(0);
 
@@ -139,7 +141,11 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
         return () => ro.disconnect();
     }, []);
 
-    const fitPps = Math.max(20, (Math.max(300, width) - PAD * 2) / Math.max(4, seqLen + 0.5));
+    const fitPps = Math.max(0.05, (Math.max(300, width) - PAD * 2) / Math.max(4, seqLen + 0.5));
+    // long videos need much more zoom to reach frame level
+    const MAXZ = Math.max(40, 300 / fitPps);
+    const maxZRef = useRef(MAXZ);
+    maxZRef.current = MAXZ;
     const pps = fitPps * zoom;
     const X = useCallback((outT: number) => PAD + outT * pps, [pps]);
     const contentW = PAD * 2 + Math.max(seqLen + 2, 4) * pps;
@@ -279,7 +285,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                 if (next !== undefined) k.p.onSeekOut(Math.min(next, k.outLen - 0.01));
             } else if (e.key === 'Home') k.p.onSeekOut(0);
             else if (e.key === 'End') k.p.onSeekOut(Math.max(0, k.outLen - 0.05));
-            else if (e.key === '=' || e.key === '+') setZoom((z) => Math.min(40, z * 1.25));
+            else if (e.key === '=' || e.key === '+') setZoom((z) => Math.min(maxZRef.current, z * 1.25));
             else if (e.key === '-') setZoom((z) => Math.max(1, z / 1.25));
             else if (e.key === '\\') k.fit();
         };
@@ -434,8 +440,8 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
     }, [p.energy, pps, clip, contentW]);
 
     // ruler ticks
-    const minorEvery = pps > 160 ? 1 / FPS * 5 : pps > 60 ? 0.5 : pps > 25 ? 1 : pps > 10 ? 2 : 5;
-    const majorEvery = pps > 160 ? 1 : pps > 60 ? 2 : pps > 25 ? 5 : pps > 10 ? 10 : 30;
+    const minorEvery = pps > 160 ? 1 / FPS * 5 : pps > 60 ? 0.5 : pps > 25 ? 1 : pps > 10 ? 2 : pps > 4 ? 5 : pps > 1.5 ? 15 : pps > 0.5 ? 60 : 300;
+    const majorEvery = pps > 160 ? 1 : pps > 60 ? 2 : pps > 25 ? 5 : pps > 10 ? 10 : pps > 4 ? 30 : pps > 1.5 ? 60 : pps > 0.5 ? 300 : 1800;
     const ticks: { t: number; major: boolean }[] = [];
     for (let t = 0; t <= seqLen + 2; t += minorEvery) ticks.push({ t: Math.round(t * 1000) / 1000, major: Math.abs(t / majorEvery - Math.round(t / majorEvery)) < 1e-6 });
 
@@ -488,8 +494,8 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                     <button className={`tl-icon ${snap ? 'tl-on' : ''}`} onClick={() => setSnap(!snap)} title="Snapping (S)"><Magnet size={15} /></button>
                     <div className="tl-sep" />
                     <button className="tl-icon" onClick={() => setZoom((z) => Math.max(1, z / 1.4))} title="Zoom out (-)"><ZoomOut size={15} /></button>
-                    <input type="range" min={0} max={1} step={0.001} value={Math.log(zoom) / Math.log(40)} onChange={(e) => setZoom(Math.pow(40, +e.target.value))} className="tl-range" aria-label="Timeline zoom" />
-                    <button className="tl-icon" onClick={() => setZoom((z) => Math.min(40, z * 1.4))} title="Zoom in (+)"><ZoomIn size={15} /></button>
+                    <input type="range" min={0} max={1} step={0.001} value={Math.log(zoom) / Math.log(MAXZ)} onChange={(e) => setZoom(Math.pow(MAXZ, +e.target.value))} className="tl-range" aria-label="Timeline zoom" />
+                    <button className="tl-icon" onClick={() => setZoom((z) => Math.min(MAXZ, z * 1.4))} title="Zoom in (+)"><ZoomIn size={15} /></button>
                     <button className="tl-icon" onClick={fit} title="Fit to window (\)"><Maximize2 size={14} /></button>
                 </div>
             </div>
@@ -501,12 +507,16 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                 onPointerMove={onPointerMove}
                 onPointerUp={onPointerUp}
                 onPointerLeave={() => razorLineRef.current && (razorLineRef.current.style.opacity = '0')}
+                onScroll={() => {
+                    cancelAnimationFrame(scrollRaf.current);
+                    scrollRaf.current = requestAnimationFrame(() => setViewX(scrollRef.current?.scrollLeft ?? 0));
+                }}
                 onWheel={(e) => {
                     const el = scrollRef.current!;
                     if (e.ctrlKey || e.metaKey) {
                         // zoom around the mouse
                         const at = xToOut(e.clientX);
-                        const nz = Math.max(1, Math.min(40, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+                        const nz = Math.max(1, Math.min(MAXZ, zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
                         setZoom(nz);
                         requestAnimationFrame(() => {
                             const r = el.getBoundingClientRect();
@@ -548,7 +558,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                         <div className="tl-ruler" style={{ height: trackH('ruler') }} onPointerDown={(e) => { startDrag(e, 'scrub'); p.onSeekOut(Math.max(0, Math.min(seqLen, xToOut(e.clientX)))); }}>
                             {ticks.map((tk) => (
                                 <div key={tk.t} className={`tl-tick ${tk.major ? 'tl-tick-major' : ''}`} style={{ left: X(tk.t) }}>
-                                    {tk.major && <span>{timecode(tk.t).slice(3, 8)}</span>}
+                                    {tk.major && <span>{seqLen >= 3600 ? timecode(tk.t).slice(0, 8) : timecode(tk.t).slice(3, 8)}</span>}
                                 </div>
                             ))}
                         </div>
@@ -670,6 +680,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                             const a = outOf(capTimes[i].start);
                             const b = outOf(capTimes[i].end);
                             if (b - a < 0.02) return null;
+                            if (X(b) < viewX - 400 || X(a) > viewX + width + 400) return null;
                             return (
                                 <button
                                     key={i}

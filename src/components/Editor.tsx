@@ -418,7 +418,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                 <button className="ed-hbtn" onClick={onBack} title="Back to all clips" aria-label="Back to all clips"><ArrowLeft size={17} /></button>
                 <span className="ed-logo">✂</span>
                 <div className="ed-hsep" />
-                <span className={`rounded-md px-1.5 py-0.5 text-xs font-extrabold ${scoreTone(clip.score)}`} title="Virality score">{clip.score}</span>
+                {!project.options.captionsOnly && <span className={`rounded-md px-1.5 py-0.5 text-xs font-extrabold ${scoreTone(clip.score)}`} title="Virality score">{clip.score}</span>}
                 <input className="ed-title" value={clip.title} onChange={(e) => setClip({ title: e.target.value })} aria-label="Clip title" />
                 <span className="hidden truncate text-xs text-white/40 xl:inline">{project.name}</span>
                 <div className="ml-auto flex items-center gap-1.5">
@@ -840,6 +840,10 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 <button className="btn-ghost" onClick={() => saveBlob(new Blob([buildSrt(words, clip, style, project.speakers)], { type: 'text/plain' }), `${safeName(clip.title)}.srt`)}>
                                     Download captions (.srt)
                                 </button>
+                                <button className="btn-ghost" onClick={() => saveBlob(new Blob([transcriptText(words, clip)], { type: 'text/plain' }), `${safeName(clip.title)} transcript.txt`)}>
+                                    Download transcript (.txt)
+                                </button>
+                                {project.options.captionsOnly && <p className="text-xs text-muted">The .srt file can be uploaded to YouTube as subtitles, so viewers can switch them on and off. The MP4 has the captions burned in.</p>}
                                 <p className="text-xs text-muted">Rendering runs on your device. 720p takes about a minute per clip; effects and 1080p take longer.</p>
                             </>
                         )}
@@ -1545,4 +1549,16 @@ function LayoutGlyph({ id }: { id: Layout | 'default' }) {
             )}
         </span>
     );
+}
+
+/** Plain transcript of the clip's kept parts, a new paragraph after each long pause. */
+function transcriptText(words: Word[], clip: Clip): string {
+    const segs = segmentsOf(clip);
+    const kept = words.filter((w) => segs.some((s) => w.start >= s.start - 0.05 && w.start < s.end));
+    let out = '';
+    kept.forEach((w, i) => {
+        const gap = i > 0 ? w.start - kept[i - 1].end : 0;
+        out += i === 0 ? w.text.trim() : (gap > 1.5 ? '\n\n' : ' ') + w.text.trim();
+    });
+    return out + '\n';
 }

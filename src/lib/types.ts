@@ -141,6 +141,8 @@ export type Project = {
         asrQuality?: AsrQuality;
         language?: string;
         picker?: Picker;
+        /** just caption the whole video, no clip finding */
+        captionsOnly?: boolean;
     };
     thumb?: string;
     /** who is speaking from each time on (speaker index into style.speakerColors) */

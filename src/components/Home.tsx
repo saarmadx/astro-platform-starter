@@ -11,6 +11,8 @@ export type NewProjectInput = {
     template: string;
     highlight: string;
     options: Project['options'];
+    /** captions-only: keep the video's own shape */
+    keepShape?: boolean;
 };
 
 const LENGTHS = [
@@ -53,6 +55,9 @@ type Props = {
 
 export default function Home({ projects, running, onCreate, onOpen, onOpenClip, onRestore, accessCode, setAccessCode }: Props) {
     const [file, setFile] = useState<File | null>(null);
+    const [job, setJob] = useState<'clips' | 'captions'>('clips');
+    const [keepShape, setKeepShape] = useState(true);
+    const captionsOnly = job === 'captions';
     const [length, setLength] = useState('auto');
     const [maxClips, setMaxClips] = useState(10);
     const [aspect, setAspect] = useState<Aspect>('9:16');
@@ -108,7 +113,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
         const tpl = TEMPLATES.find((t) => t.id === template)!;
         setBusy(true);
         try {
-            await onCreate({ file, chatFile: chatFile ?? undefined, aspect, template, highlight: tpl.defaultHighlight, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality } });
+            await onCreate({ file, chatFile: chatFile ?? undefined, aspect, template, highlight: tpl.defaultHighlight, keepShape: captionsOnly && keepShape, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality, captionsOnly } });
         } catch (e) {
             setError((e as Error).message);
             setBusy(false);
@@ -120,9 +125,19 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
             <section className="panel overflow-hidden">
                 <div className="grid gap-0 lg:grid-cols-[1.2fr_1fr]">
                     <div className="flex flex-col gap-4 p-5 sm:p-8">
+                        <div className="flex w-fit gap-1 rounded-xl bg-black/30 p-1" role="tablist" aria-label="What to make">
+                            {[
+                                { id: 'clips', label: '✂ Find clips' },
+                                { id: 'captions', label: '💬 Captions only' }
+                            ].map((j) => (
+                                <button key={j.id} role="tab" aria-selected={job === j.id} onClick={() => setJob(j.id as 'clips' | 'captions')} className={`rounded-lg px-4 py-2 text-sm font-bold transition ${job === j.id ? 'bg-accent text-ink' : 'text-muted hover:text-white'}`}>
+                                    {j.label}
+                                </button>
+                            ))}
+                        </div>
                         <div>
-                            <h1 className="!text-3xl sm:!text-4xl">Turn one long video into viral clips</h1>
-                            <p className="mt-2 text-muted">AI finds the best moments, reframes them around the speaker, and adds animated captions.</p>
+                            <h1 className="!text-3xl sm:!text-4xl">{captionsOnly ? 'Add captions to your whole video' : 'Turn one long video into viral clips'}</h1>
+                            <p className="mt-2 text-muted">{captionsOnly ? 'No cutting: you get the same video back with animated captions burned in, plus a captions file (.srt) and the transcript (.txt).' : 'AI finds the best moments, reframes them around the speaker, and adds animated captions.'}</p>
                         </div>
                         <label
                             className={`flex min-h-48 cursor-pointer flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed p-6 text-center transition ${file ? 'border-accent/60 bg-accent/5' : 'border-white/15 bg-white/[0.03] hover:border-accent/60'}`}
@@ -148,7 +163,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                         </label>
                         {error && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{error}</p>}
                         <button className="btn-accent" disabled={!file || busy} onClick={start}>
-                            {busy ? 'Starting…' : 'Get clips in 1 click'}
+                            {busy ? 'Starting…' : captionsOnly ? 'Add captions' : 'Get clips in 1 click'}
                         </button>
                         <p className="text-xs text-muted">Only clip videos you own or have permission to use. Your video stays in your browser; only the audio is sent for transcription.</p>
                     </div>
@@ -163,6 +178,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                 ))}
                             </select>
                         </Option>
+                        {!captionsOnly && (<>
                         <Option label="How to pick clips">
                             <div className="grid gap-2 sm:grid-cols-3">
                                 {PICKERS.map((m) => (
@@ -189,10 +205,17 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                         <Option label={`Number of clips: ${maxClips}`}>
                             <input type="range" min={1} max={20} value={maxClips} onChange={(e) => setMaxClips(+e.target.value)} className="w-full accent-[var(--color-accent)]" />
                         </Option>
+                        </>)}
                         <Option label="Aspect ratio">
-                            <div className="grid grid-cols-3 gap-2">
+                            <div className={`grid gap-2 ${captionsOnly ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'}`}>
+                                {captionsOnly && (
+                                    <button onClick={() => setKeepShape(true)} className={`rounded-xl border px-2 py-2 text-left ${keepShape ? 'border-accent bg-accent/10' : 'border-white/10 hover:bg-white/5'}`}>
+                                        <span className="block font-bold">Same</span>
+                                        <span className="block text-xs text-muted">As the video</span>
+                                    </button>
+                                )}
                                 {ASPECTS.map((a) => (
-                                    <button key={a.id} onClick={() => setAspect(a.id)} className={`rounded-xl border px-2 py-2 text-left ${aspect === a.id ? 'border-accent bg-accent/10' : 'border-white/10 hover:bg-white/5'}`}>
+                                    <button key={a.id} onClick={() => { setAspect(a.id); setKeepShape(false); }} className={`rounded-xl border px-2 py-2 text-left ${aspect === a.id && !(captionsOnly && keepShape) ? 'border-accent bg-accent/10' : 'border-white/10 hover:bg-white/5'}`}>
                                         <span className="block font-bold">{a.label}</span>
                                         <span className="block text-xs text-muted">{a.hint}</span>
                                     </button>
@@ -206,6 +229,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                 ))}
                             </div>
                         </Option>
+                        {!captionsOnly && (<>
                         <Option label="Stream chat replay (optional)">
                             <label className="flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-white/10 px-3 py-2 text-sm hover:bg-white/5">
                                 <span className="min-w-0 truncate">{chatFile ? `💬 ${chatFile.name}` : 'Add the chat file to find moments where chat exploded'}</span>
@@ -217,6 +241,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                         <Option label="Topics to look for (optional)">
                             <input className="input" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. money tips, funny stories" />
                         </Option>
+                        </>)}
                         <details className="text-sm">
                             <summary className="cursor-pointer text-muted">Caption settings</summary>
                             <div className="mt-3 flex flex-col gap-3">
