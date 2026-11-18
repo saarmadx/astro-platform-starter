@@ -540,16 +540,16 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                     <button className={`tl-icon ${tool === 'select' ? 'tl-on' : ''}`} onClick={() => setTool('select')} title="Selection tool (V)"><MousePointer2 size={15} /></button>
                     <button className={`tl-icon ${tool === 'razor' ? 'tl-on' : ''}`} onClick={() => setTool('razor')} title="Razor tool (C): click a part to cut it"><Scissors size={15} /></button>
                 </div>
-                <button className="tl-btn" onClick={() => splitAt(outNow.current)} title="Split at playhead (Ctrl+K)"><Scissors size={14} /> Split</button>
-                <button className="tl-btn" onClick={deleteSelection} disabled={!sel || sel.type === 'caption'} title="Delete the selection; the gap closes (Delete)"><Trash2 size={14} /> Delete</button>
-                <button className="tl-btn" onClick={addZoomAtPlayhead} title="Add a punch-in zoom at the playhead (Z)"><ZoomIn size={14} /> Zoom</button>
-                <button className="tl-btn" onClick={addText} title="Add text at the playhead (T)"><Type size={14} /> Text</button>
+                <button className="tl-btn" onClick={() => splitAt(outNow.current)} title="Split at playhead (Ctrl+K)"><Scissors size={14} /> <span className="hidden xl:inline">Split</span></button>
+                <button className="tl-btn" onClick={deleteSelection} disabled={!sel || sel.type === 'caption'} title="Delete the selection; the gap closes (Delete)"><Trash2 size={14} /> <span className="hidden xl:inline">Delete</span></button>
+                <button className="tl-btn" onClick={addZoomAtPlayhead} title="Add a punch-in zoom at the playhead (Z)"><ZoomIn size={14} /> <span className="hidden 2xl:inline">Zoom</span></button>
+                <button className="tl-btn" onClick={addText} title="Add text at the playhead (T)"><Type size={14} /> <span className="hidden 2xl:inline">Text</span></button>
                 <button className="tl-btn" onClick={() => trimToPlayhead('start')} title="Remove from the start of this part to the playhead (Q)">⇤ Q</button>
                 <button className="tl-btn" onClick={() => trimToPlayhead('end')} title="Remove from the playhead to the end of this part (W)">W ⇥</button>
-                <button className="tl-btn" onClick={toggleMarker} title="Add or remove a marker at the playhead (M)"><Flag size={13} /> Marker</button>
+                <button className="tl-btn" onClick={toggleMarker} title="Add or remove a marker at the playhead (M)"><Flag size={13} /> <span className="hidden 2xl:inline">Marker</span></button>
                 <div className="tl-sep" />
-                <button className="tl-btn" onClick={() => extend('before')} disabled={segs[0].start <= 0.01} title="Take 5 more seconds of the video before the clip">+5s before</button>
-                <button className="tl-btn" onClick={() => extend('after')} disabled={segs[segs.length - 1].end >= p.duration - 0.01} title="Take 5 more seconds of the video after the clip">+5s after</button>
+                <button className="tl-btn" onClick={() => extend('before')} disabled={segs[0].start <= 0.01} title="Take 5 more seconds of the video before the clip">◀ +5s</button>
+                <button className="tl-btn" onClick={() => extend('after')} disabled={segs[segs.length - 1].end >= p.duration - 0.01} title="Take 5 more seconds of the video after the clip">+5s ▶</button>
                 <div className="tl-sep" />
                 <button className="tl-icon" onClick={p.onUndo} disabled={!p.canUndo} title="Undo (Ctrl+Z)"><Undo2 size={15} /></button>
                 <button className="tl-icon" onClick={p.onRedo} disabled={!p.canRedo} title="Redo (Ctrl+Shift+Z)"><Redo2 size={15} /></button>
@@ -558,7 +558,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                         <div className="tl-sep" />
                         <label className="flex items-center gap-2 text-xs text-white/60">
                             <Layers size={14} />
-                            {selSegs.length > 1 ? `${selSegs.length} parts` : 'Part'} layout
+                            <span className="hidden 2xl:inline">{selSegs.length > 1 ? `${selSegs.length} parts` : 'Part'} layout</span>
                             <select className="tl-select" value={selLayout === 'mixed' ? '' : selLayout} onChange={(e) => setLayout(selectedIds, e.target.value as Layout | 'default')} aria-label="Layout for the selected part">
                                 {selLayout === 'mixed' && <option value="">Mixed</option>}
                                 {LAYOUTS.map((l) => (

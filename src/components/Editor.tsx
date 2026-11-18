@@ -75,6 +75,10 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     const future = useRef<Clip[]>([]);
     const [futureLen, setFutureLen] = useState(0);
     const timelineRef = useRef<TimelineApi>(null);
+    // the newest project, so several changes in a row each build on the one before
+    // (otherwise the second change is made from an old copy and silently undoes the first)
+    const latest = useRef(project);
+    latest.current = project;
     // the timeline only re-renders when the clip or selection changes: its callbacks never change identity
     const fns = useRef<Record<string, (...a: any[]) => any>>({});
     const tl = useMemo(() => {
@@ -254,8 +258,12 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     if (!clip) return <p className="text-muted">This clip no longer exists.</p>;
 
     // ---------- updates ----------
-    const setStyle = (patch: Partial<StyleSettings>) => onChange({ ...project, style: { ...style, ...patch } });
-    const setClip = (patch: Partial<Clip>) => onChange({ ...project, clips: project.clips.map((c) => (c.id === clip.id ? { ...c, ...patch } : c)) });
+    const commit = (p: Project) => {
+        latest.current = p;
+        onChange(p);
+    };
+    const setStyle = (patch: Partial<StyleSettings>) => commit({ ...latest.current, style: { ...latest.current.style, ...patch } });
+    const setClip = (patch: Partial<Clip>) => commit({ ...latest.current, clips: latest.current.clips.map((c) => (c.id === clip.id ? { ...c, ...patch } : c)) });
     const editClip = (patch: Partial<Clip>) => {
         history.current = [...history.current.slice(-49), clip];
         setHistoryLen(history.current.length);
@@ -269,7 +277,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         if (!next) return;
         history.current.push(clip);
         setHistoryLen(history.current.length);
-        onChange({ ...project, clips: project.clips.map((c) => (c.id === clip.id ? next : c)) });
+        commit({ ...latest.current, clips: latest.current.clips.map((c) => (c.id === clip.id ? next : c)) });
     };
     const undo = () => {
         const prev = history.current.pop();
@@ -278,7 +286,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             future.current.push(clip);
             setFutureLen(future.current.length);
         }
-        if (prev) onChange({ ...project, clips: project.clips.map((c) => (c.id === clip.id ? prev : c)) });
+        if (prev) commit({ ...latest.current, clips: latest.current.clips.map((c) => (c.id === clip.id ? prev : c)) });
     };
 
     function seek(t: number) {
@@ -352,7 +360,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             return word;
         });
         all.splice(first, last - first + 1, ...fresh);
-        onChange({ ...project, transcript: { ...project.transcript, words: all } });
+        commit({ ...latest.current, transcript: { ...project.transcript, words: all } });
     }
 
     function removeSilences() {
@@ -369,7 +377,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
 
     function setSpeakerHere(speaker: number) {
         const list = [...(project.speakers ?? []).filter((s) => Math.abs(s.t - time) > 0.05), { t: time, speaker }].sort((a, b) => a.t - b.t);
-        onChange({ ...project, speakers: list });
+        commit({ ...latest.current, speakers: list });
     }
 
     async function reframe() {
@@ -562,7 +570,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                             </span>
                                         ))}
                                         {(project.speakers?.length ?? 0) > 0 && (
-                                            <button className="text-xs text-muted hover:text-red-300" onClick={() => onChange({ ...project, speakers: [] })}>
+                                            <button className="text-xs text-muted hover:text-red-300" onClick={() => commit({ ...latest.current, speakers: [] })}>
                                                 Clear
                                             </button>
                                         )}
