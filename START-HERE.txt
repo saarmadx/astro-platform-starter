@@ -25,43 +25,35 @@ Keep the black window open while you use the app. Close it to stop.
 
 3) MAKE CLIPS (all free)
 ------------------------
-1. Drop in a video. For your first try, use a short one (5-10 minutes).
-2. Choose the language spoken in the video.
+1. Home: choose "Find clips" (or "Captions only" to caption a whole video).
+   Drop in one video, or SEVERAL at once (they are done one after another).
+2. Pick a TEMPLATE (e.g. "Streamer chaos") so every clip is styled for you.
 3. Choose how to pick clips:
-   - "With Claude chat" (best): the app makes your captions, then gives you a
-     prompt. Click "Copy prompt", open a new chat at claude.ai, paste it (Ctrl+V),
-     send, copy Claude's whole answer, paste it back into the app, click
-     "Create my clips".
-   - "Laugh detector": fully automatic. Finds where people burst out laughing.
-     Works best on podcasts/streams where people laugh out loud.
-4. Click "Get clips in 1 click". Keep the tab open.
-   The FIRST time, the free speech model downloads (about 80-250 MB, once).
-   Free captions run on your own computer, so they take a while: roughly as long
-   as the video itself, often faster on a newer PC.
-5. Click a clip to open the editor. The TIMELINE at the bottom works like a video
-   editor:
-     Space = play/pause   S = split at the playhead   Delete = cut the selected part
-     Z = add a zoom       Ctrl+Z = undo               drag the green handles to trim
-   Click a caption block in the timeline to fix its words.
-6. Editor tabs:
-     Captions  - 18 caption styles, colours, censor swear words (with bleep),
-                 animated emoji, speaker colours, FIX CAPTION WORDS (replace a
-                 misheard word everywhere, or let Claude find them), TRANSLATE
-     Layout    - Facecam + gameplay split (for streams), follow speaker, fit + blur
-     Effects   - every effect has its own on/off switch (all off at first):
-                 hook title, zooms (or auto-zoom on laughs), remove silences,
-                 freeze-frame ending, progress bar, SOUND EFFECTS, INSTANT REPLAY,
-                 SCREEN SHAKE & FLASH, TEXT STICKERS, BACKGROUND MUSIC,
-                 plus "Use this clip's effects on all clips" and saved PRESETS
-     Post      - IMPROVE THIS CLIP WITH CLAUDE, title ideas, description, hashtags
-     Thumbnail - make a thumbnail / Short cover with big text
-     Export    - MP4 (720p or 1080p) and captions file
-7. On the clip grid: "Watch all" plays every clip back to back; "Export all"
-   downloads every clip plus a text file with all titles and descriptions;
-   "Compilation" joins your best clips into one "Top 5" video; "Add chat" adds
-   your stream's chat replay so the moments where chat exploded are found.
-   Home screen: "Back up projects" saves all your projects to a file.
-8. Optional: Brand kit (left menu) to add your logo to every clip.
+   - "With Claude chat" (smartest): copy the prompt into claude.ai, paste the
+     answer back, click "Create my clips".
+   - "Laugh detector" (automatic): scores every second for laughs, chat
+     explosions, hype/rage in your voice and words like "NO WAY", "bro what".
+   For streams choose "Gaming" under "What are you looking for?" and type the
+   game (e.g. GTA 6) in "Game or topic" - it's added as a hashtag.
+4. Click the big button. Keep the tab open. The first time, the free speech
+   model downloads once.
+5. Click a clip to open the editor. TIMELINE shortcuts (like Premiere Pro):
+     Space play/pause      J K L back/pause/play    Left/Right one frame
+     C razor (click to cut)   Ctrl+K split at the playhead   V normal pointer
+     Q cut from part start to playhead     W cut from playhead to part end
+     Delete remove the selected part (gap closes)    Ctrl+Z undo
+     M marker   T add text   Z zoom   S snapping on/off   Up/Down jump to cuts
+     "+5s before / +5s after" grabs more video if a clip is too tight.
+   Click a part of the video (V1 row) to give it its own layout:
+   Facecam + gameplay, facecam bubble (PiP), full screen, or fit + blur.
+   Right-click a part for the same options.
+6. Editor tabs: Captions (18 styles, fix words, translate), Layout, Effects
+   (hook title, zooms, transitions at cuts, sounds, replay, shake, freeze,
+   text, music), Post (titles, description, hashtags), Thumbnail, Export.
+7. Brand kit (left menu): your NAME/@handle on every clip (moving anti-theft
+   option) and your logo.
+8. Post planner (left menu): plan when each clip goes up, copy the upload text,
+   checklist, reminders, find your best posting times, how-to guides.
 
 
 TIPS
@@ -83,7 +75,9 @@ IF SOMETHING GOES WRONG
 - "Free captioning failed: Failed to fetch": you need internet the first time,
   so the speech model can download. Check your connection and try again.
 - 'npm' is not recognized: Node.js isn't installed yet; install it and restart.
-- No clips from the laugh detector: the video has no loud laughs; use
+- Updating: unzip the new version over the old folder or into a new one, then
+  double-click start-windows.bat. It installs anything new by itself.
+- Few clips from the laugh detector: nobody gets excited on the video; use
   "With Claude chat" instead.
 - The page is blank or stuck: refresh it.
 Send a screenshot of any error and it can be fixed.
