@@ -21,15 +21,43 @@ function getDetector(): Promise<FaceDetector> {
     return detectorPromise;
 }
 
-function seek(v: HTMLVideoElement, t: number): Promise<void> {
+/** Jumps to a time. Resolves false if the browser doesn't manage it in time (never waits forever). */
+function seek(v: HTMLVideoElement, t: number, timeoutMs = 4000): Promise<boolean> {
     return new Promise((resolve) => {
-        const done = () => {
-            v.removeEventListener('seeked', done);
-            resolve();
-        };
-        v.addEventListener('seeked', done);
+        const timer = setTimeout(() => finish(false), timeoutMs);
+        function finish(ok: boolean) {
+            clearTimeout(timer);
+            v.removeEventListener('seeked', onSeeked);
+            resolve(ok);
+        }
+        const onSeeked = () => finish(true);
+        v.addEventListener('seeked', onSeeked);
         v.currentTime = t;
     });
+}
+
+/** A hidden video element for reading frames; rejects if the file can't be opened in time. */
+export function openVideo(videoUrl: string, timeoutMs = 20000): Promise<HTMLVideoElement> {
+    const v = document.createElement('video');
+    v.muted = true;
+    v.preload = 'auto';
+    v.src = videoUrl;
+    return new Promise((res, rej) => {
+        const timer = setTimeout(() => rej(new Error('The video took too long to open for reframing.')), timeoutMs);
+        v.onloadeddata = () => {
+            clearTimeout(timer);
+            res(v);
+        };
+        v.onerror = () => {
+            clearTimeout(timer);
+            rej(new Error('Could not read the video for reframing.'));
+        };
+    });
+}
+
+export function closeVideo(v: HTMLVideoElement) {
+    v.removeAttribute('src');
+    v.load();
 }
 
 export type TrackResult = { track?: { t: number; x: number }[]; thumb: string };
@@ -38,15 +66,25 @@ export type TrackResult = { track?: { t: number; x: number }[]; thumb: string };
  * Samples the clip every `step` seconds, detects the largest face, and returns crop
  * keyframes (absolute time -> face centre as a fraction of the video width). Also captures a thumbnail.
  */
-export async function analyseClip(videoUrl: string, start: number, end: number, aspect: Aspect, step = 0.5): Promise<TrackResult> {
-    const v = document.createElement('video');
-    v.muted = true;
-    v.preload = 'auto';
-    v.src = videoUrl;
-    await new Promise<void>((res, rej) => {
-        v.onloadeddata = () => res();
-        v.onerror = () => rej(new Error('Could not read the video for reframing.'));
-    });
+export async function analyseClip(
+    videoUrl: string,
+    start: number,
+    end: number,
+    aspect: Aspect,
+    opts: { video?: HTMLVideoElement; track?: boolean; budgetMs?: number } = {}
+): Promise<TrackResult> {
+    // a shared video element can be passed in so a long file isn't opened again for every clip
+    const own = !opts.video;
+    const v = opts.video ?? (await openVideo(videoUrl));
+    try {
+        return await analyse(v, start, end, aspect, opts.track !== false, opts.budgetMs ?? 45000);
+    } finally {
+        if (own) closeVideo(v);
+    }
+}
+
+async function analyse(v: HTMLVideoElement, start: number, end: number, aspect: Aspect, wantTrack: boolean, budgetMs: number): Promise<TrackResult> {
+    const began = performance.now();
     const vw = v.videoWidth;
     const vh = v.videoHeight;
     const scale = Math.min(1, 640 / vw);
@@ -56,7 +94,7 @@ export async function analyseClip(videoUrl: string, start: number, end: number, 
     const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 
     // thumbnail
-    await seek(v, Math.min(end - 0.1, start + 1));
+    await seek(v, Math.min(end - 0.1, start + 1), 8000);
     const thumbCanvas = document.createElement('canvas');
     thumbCanvas.width = 320;
     thumbCanvas.height = Math.round((320 * vh) / vw);
@@ -64,7 +102,7 @@ export async function analyseClip(videoUrl: string, start: number, end: number, 
     const thumb = thumbCanvas.toDataURL('image/jpeg', 0.7);
 
     const { cw } = cropWindow(vw, vh, aspect);
-    if (vw - cw < 4) return { thumb }; // source already fits: nothing to track
+    if (!wantTrack || vw - cw < 4) return { thumb }; // not needed, or the source already fits
 
     let detector: FaceDetector;
     try {
@@ -75,8 +113,16 @@ export async function analyseClip(videoUrl: string, start: number, end: number, 
 
     const centers: (number | null)[] = [];
     const times: number[] = [];
+    // at most ~40 looks per clip, and never longer than the time budget
+    const step = Math.max(0.5, (end - start) / 40);
+    let misses = 0;
     for (let t = start; t < end; t += step) {
-        await seek(v, t);
+        if (performance.now() - began > budgetMs || misses >= 3) break;
+        if (!(await seek(v, t))) {
+            misses++;
+            continue;
+        }
+        misses = 0;
         ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
         const result = detector.detect(canvas);
         let best: { x: number; area: number } | null = null;
@@ -89,10 +135,8 @@ export async function analyseClip(videoUrl: string, start: number, end: number, 
         centers.push(best ? best.x : null);
         times.push(t);
     }
-    v.removeAttribute('src');
-    v.load();
 
-    if (centers.every((c) => c === null)) return { thumb };
+    if (!centers.length || centers.every((c) => c === null)) return { thumb };
 
     // fill gaps with the nearest known position
     let last = centers.find((c) => c !== null) as number;
@@ -123,14 +167,7 @@ export type Rect = { x: number; y: number; w: number; h: number };
  * Returns a rectangle (fractions of the frame) around it, or null if none is found.
  */
 export async function detectFacecam(videoUrl: string, duration: number, samples = 10): Promise<Rect | null> {
-    const v = document.createElement('video');
-    v.muted = true;
-    v.preload = 'auto';
-    v.src = videoUrl;
-    await new Promise<void>((res, rej) => {
-        v.onloadeddata = () => res();
-        v.onerror = () => rej(new Error('Could not read the video.'));
-    });
+    const v = await openVideo(videoUrl);
     const vw = v.videoWidth;
     const vh = v.videoHeight;
     const scale = Math.min(1, 640 / vw);
@@ -145,8 +182,13 @@ export async function detectFacecam(videoUrl: string, duration: number, samples 
         return null;
     }
     const boxes: Rect[] = [];
-    for (let i = 0; i < samples; i++) {
-        await seek(v, (duration * (i + 0.5)) / samples);
+    let misses = 0;
+    for (let i = 0; i < samples && misses < 3; i++) {
+        if (!(await seek(v, (duration * (i + 0.5)) / samples, 6000))) {
+            misses++;
+            continue;
+        }
+        misses = 0;
         ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
         for (const d of detector.detect(canvas).detections) {
             const b = d.boundingBox;

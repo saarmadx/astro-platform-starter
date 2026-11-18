@@ -3,7 +3,7 @@ import { findClips, transcribeVideo } from '../lib/api';
 import { projectEvents } from '../lib/audio';
 import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
 import { chatSpikes, parseChat } from '../lib/chat';
-import { analyseClip, detectFacecam } from '../lib/faces';
+import { analyseClip, closeVideo, detectFacecam, openVideo } from '../lib/faces';
 import { applyFx } from '../lib/presets';
 import { cancelTranscription, cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
@@ -105,6 +105,19 @@ export default function Studio() {
         let p = { ...project };
         const o = p.options;
         setErrors((e) => ({ ...e, [p.id]: '' }));
+        // stopped while making thumbnails: the clips are already there, so only finish that step
+        if (!retranscribe && p.status === 'clipping' && p.clips.length && p.transcript) {
+            try {
+                await reframe(p, url);
+            } finally {
+                setProgress((pr) => {
+                    const n = { ...pr };
+                    delete n[p.id];
+                    return n;
+                });
+            }
+            return;
+        }
         try {
             if (!p.transcript || retranscribe) {
                 p = { ...p, status: 'transcribing' };
@@ -207,16 +220,33 @@ export default function Studio() {
         });
         p = { ...p, clips };
         update(p);
-        for (let i = 0; i < clips.length; i++) {
-            setStep(p.id, `Reframing clip ${i + 1} of ${clips.length}`, 0.7 + (0.3 * i) / clips.length);
-            try {
-                const res = await analyseClip(url, clips[i].start, clips[i].end, p.style.aspect);
-                clips[i] = { ...clips[i], track: res.track, thumb: res.thumb };
-                p = { ...p, clips: [...clips], thumb: p.thumb ?? res.thumb };
-                update(p);
-            } catch {
-                /* reframing is optional; keep the clip centred */
+        await reframe(p, url);
+    }
+
+    /** thumbnails, and the speaker-following crop when the layout uses it. Optional: never blocks the clips. */
+    async function reframe(project: Project, url: string) {
+        let p: Project = { ...project, status: 'clipping' };
+        const clips = [...p.clips];
+        // only "follow speaker" uses the face track; other layouts just need thumbnails (much faster)
+        const needTrack = p.style.layout === 'auto';
+        let video: HTMLVideoElement | null = null;
+        try {
+            video = await openVideo(url);
+            for (let i = 0; i < clips.length; i++) {
+                setStep(p.id, `${needTrack ? 'Reframing' : 'Making thumbnails for'} clip ${i + 1} of ${clips.length}`, 0.7 + (0.3 * i) / clips.length);
+                try {
+                    const res = await analyseClip(url, clips[i].start, clips[i].end, p.style.aspect, { video, track: needTrack, budgetMs: 30000 });
+                    clips[i] = { ...clips[i], track: res.track ?? clips[i].track, thumb: res.thumb };
+                    p = { ...p, clips: [...clips], thumb: p.thumb ?? res.thumb };
+                    update(p);
+                } catch {
+                    /* reframing is optional; keep the clip centred */
+                }
             }
+        } catch {
+            /* the video couldn't be read for thumbnails: the clips still work */
+        } finally {
+            if (video) closeVideo(video);
         }
         p = { ...p, status: 'ready' };
         update(p);
