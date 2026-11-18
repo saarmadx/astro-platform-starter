@@ -10,11 +10,12 @@ import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveP
 import type { Aspect, Brand, Clip, Project, StyleSettings } from '../lib/types';
 import BrandKit from './BrandKit';
 import Editor from './Editor';
-import { Home as HomeIcon, Palette, Scissors } from 'lucide-react';
+import { CalendarDays, Home as HomeIcon, Palette, Scissors } from 'lucide-react';
+import Planner from './Planner';
 import Home, { type NewProjectInput } from './Home';
 import ProjectView from './ProjectView';
 
-export type View = { name: 'home' } | { name: 'brand' } | { name: 'project'; id: string } | { name: 'editor'; id: string; clipId: string };
+export type View = { name: 'home' } | { name: 'brand' } | { name: 'planner' } | { name: 'project'; id: string } | { name: 'editor'; id: string; clipId: string };
 
 export type LoadedVideo = { file: File; url: string };
 
@@ -343,6 +344,9 @@ export default function Studio() {
                 <NavButton active={view.name === 'home'} onClick={() => setView({ name: 'home' })}>
                     <HomeIcon size={15} className="mr-2.5 opacity-70" />Home
                 </NavButton>
+                <NavButton active={view.name === 'planner'} onClick={() => setView({ name: 'planner' })}>
+                    <CalendarDays size={15} className="mr-2.5 opacity-70" />Post planner
+                </NavButton>
                 <NavButton active={view.name === 'brand'} onClick={() => setView({ name: 'brand' })}>
                     <Palette size={15} className="mr-2.5 opacity-70" />Brand kit
                 </NavButton>
@@ -364,6 +368,7 @@ export default function Studio() {
                     </a>
                     <div className="flex gap-1">
                         <button className="btn-ghost !px-3 !py-1.5" onClick={() => setView({ name: 'home' })}>Home</button>
+                        <button className="btn-ghost !px-3 !py-1.5" onClick={() => setView({ name: 'planner' })}>Plan</button>
                         <button className="btn-ghost !px-3 !py-1.5" onClick={() => setView({ name: 'brand' })}>Brand</button>
                     </div>
                 </div>
@@ -373,6 +378,7 @@ export default function Studio() {
                         <Home projects={projects} running={progress} onCreate={createProjects} onOpen={(id) => setView({ name: 'project', id })} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} onRestore={(ps) => ps.forEach((p) => update({ ...p, status: p.status === 'transcribing' || p.status === 'clipping' ? 'error' : p.status }))} accessCode={accessCode} setAccessCode={setAccessCode} />
                     )}
                     {view.name === 'brand' && <BrandKit brand={brand} setBrand={setBrand} />}
+                    {view.name === 'planner' && <Planner projects={projects} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} />}
                     {view.name === 'project' && current && (
                         <ProjectView
                             project={current}
