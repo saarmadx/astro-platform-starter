@@ -2,7 +2,7 @@ export type Word = { text: string; start: number; end: number };
 export type Segment = { start: number; end: number; text: string };
 export type Energy = { step: number; db: number[] };
 export type Transcript = { language: string; words: Word[]; segments: Segment[]; energy?: Energy };
-export type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud' | 'chat'; strength: number; label?: string };
+export type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud' | 'chat' | 'hype'; strength: number; label?: string };
 
 export type ContentMode = 'viral' | 'funny' | 'gaming' | 'insightful' | 'story' | 'hot-takes';
 /** where captions come from: free on this PC, or OpenAI (paid) */

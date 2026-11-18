@@ -70,6 +70,8 @@ export function annotate(segments: Segment[], events: AudioEvent[], from = 0, to
                 ? `((CHAT SPIKE: stream chat exploded here, ${e.label ?? ''}))`
                 : e.type === 'reaction'
                   ? `((REACTION: laughter or loud reaction, ${len}s))`
+                  : e.type === 'hype'
+                    ? `((HYPE: excited words: "${e.label ?? ''}"))`
                   : `((LOUD: raised voices, ${len}s))`;
         lines.push({ t: e.start + 0.001, text: `[${e.start.toFixed(1)}] ${label}` });
     }
@@ -81,6 +83,8 @@ export function systemPrompt(mode: Mode): string {
     return `You are a top short-form video editor who turns long videos (podcasts, streams, interviews, vlogs) into YouTube Shorts, TikToks and Reels that people watch to the end and share.
 
 ${MODE_GUIDE[mode]}
+
+Markers in the transcript: ((REACTION)) laughter or a loud reaction with few words, ((LOUD)) raised voices, ((HYPE)) excited exclamations like "no way" or "bro what", ((CHAT SPIKE)) the live chat exploded. Several markers close together are the strongest evidence of a great moment; a marker alone is only a hint, so check that the words around it really work as a clip.
 
 ${BASE_RULES}`;
 }

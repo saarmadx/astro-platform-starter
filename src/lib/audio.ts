@@ -2,6 +2,7 @@
 // loud bursts with few or no words are usually laughter or a big reaction, which is the
 // strongest sign that something funny just happened.
 import { chatEvents } from './chat';
+import { hypeEvents } from './moments';
 import type { AudioEvent, Energy, Word } from './types';
 
 export const ENERGY_STEP = 0.25; // seconds per loudness sample
@@ -73,7 +74,10 @@ export function findAudioEvents(energy: Energy | undefined, words: Word[]): Audi
         }
         const coverage = covered / (e - s);
         const peak = Math.max(...db.slice(r.a, r.b));
-        if (laughWords > 0 || coverage < 0.35) events.push({ start: s, end: e, type: 'reaction', strength: peak });
+        // laughter comes right after someone says something and is fairly short; long loud stretches
+        // with nobody talking are music, explosions or other game sound
+        const spokeBefore = words.some((w) => w.end > s - 4 && w.start < e);
+        if (laughWords > 0 || (coverage < 0.35 && spokeBefore && e - s <= 9)) events.push({ start: s, end: e, type: 'reaction', strength: peak });
         else if (peak >= veryLoud) events.push({ start: s, end: e, type: 'loud', strength: peak });
     }
     // keep the strongest few hundred so the prompt stays small
@@ -83,5 +87,6 @@ export function findAudioEvents(energy: Energy | undefined, words: Word[]): Audi
 /** Laughs/reactions from the audio plus spikes from a stream chat replay, if one was added. */
 export function projectEvents(p: { transcript?: { energy?: Energy; words: Word[] }; chat?: { spikes: { t: number; count: number; laughs: number }[] } }): AudioEvent[] {
     const audio = p.transcript ? findAudioEvents(p.transcript.energy, p.transcript.words) : [];
-    return [...audio, ...chatEvents(p.chat?.spikes)].sort((a, b) => a.start - b.start);
+    const hype = p.transcript ? hypeEvents(p.transcript.words) : [];
+    return [...audio, ...hype, ...chatEvents(p.chat?.spikes)].sort((a, b) => a.start - b.start);
 }

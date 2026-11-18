@@ -589,10 +589,10 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
 
                         {/* FX: zooms, shakes, replay, freeze, laughs */}
                         {p.events
-                            .filter((e) => (e.type === 'reaction' || e.type === 'chat') && visible(e.start))
+                            .filter((e) => (e.type === 'reaction' || e.type === 'chat' || e.type === 'hype') && visible(e.start))
                             .map((e, i) => (
-                                <span key={`l${i}`} className="tl-marker-emoji" style={{ top: top('fx') + 8, left: X(outOf(e.start)) - 7 }} title={e.type === 'chat' ? `Chat spike: ${e.label}` : 'Laugh or reaction'}>
-                                    {e.type === 'chat' ? '💬' : '😂'}
+                                <span key={`l${i}`} className="tl-marker-emoji" style={{ top: top('fx') + 8, left: X(outOf(e.start)) - 7 }} title={e.type === 'chat' ? `Chat spike: ${e.label}` : e.type === 'hype' ? `Hype: “${e.label}”` : 'Laugh or reaction'}>
+                                    {e.type === 'chat' ? '💬' : e.type === 'hype' ? '🔥' : '😂'}
                                 </span>
                             ))}
                         {(clip.zooms ?? []).map((z, i) =>

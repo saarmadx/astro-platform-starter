@@ -1,0 +1,22 @@
+
+> clipsmith@0.1.0 predev
+> node scripts/copy-ffmpeg.mjs
+
+Copied the ffmpeg core and MediaPipe wasm into public/
+
+> clipsmith@0.1.0 dev
+> astro dev
+
+16:23:59 [@astrojs/netlify] Enabling sessions with filesystem storage
+16:23:59 [types] Generated 1ms
+16:23:59 [content] Syncing content
+16:23:59 [content] Synced content
+
+ astro  v5.10.2 ready in 692 ms
+
+┃ Local    http://localhost:4321/
+┃ Network  use --host to expose
+
+16:23:59 watching for file changes...
+16:24:06 [200] /studio 117ms
+16:24:06 [200] /studio 5ms
