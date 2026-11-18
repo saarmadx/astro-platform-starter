@@ -328,6 +328,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         select: (sel: Selection) => {
             setSelection(sel);
             if (sel?.type === 'segs') setTab('layout');
+            if (sel?.type === 'sticker') setTab('effects');
         },
         outTime: () => toOutputClamped(clip, videoRef.current?.currentTime ?? clip.start)
     };

@@ -6,7 +6,7 @@ import { aspectRatio, cropPath, cropWindow, posAt } from './geometry';
 import { getTemplate, TITLE_FONT } from './templates';
 import { outputDuration, styleAt, toOutputClamped } from './timeline';
 import { allShakes, allZooms, PIP_DEFAULT } from './fx';
-import type { Brand, Clip, Sticker, StyleSettings } from './types';
+import type { Brand, Clip, Sticker, StyleSettings, Watermark } from './types';
 
 export type Scene = {
     clip: Clip;
@@ -272,6 +272,8 @@ export function drawScene(ctx: CanvasRenderingContext2D, video: HTMLVideoElement
         ctx.drawImage(s.logo, lx, ly, lw, lh);
     }
 
+    if (s.brand.watermark?.text.trim()) drawWatermark(ctx, s.brand.watermark, outT + (s.freezing ?? 0) * (s.clip.freeze?.seconds ?? 0));
+
     if (s.freezing != null && s.clip.freeze?.text.trim()) drawFreezeText(ctx, s.clip.freeze.text, s.style);
 
     if (s.style.progressBar) {
@@ -518,3 +520,75 @@ export async function emojiPng(emoji: string, px: number): Promise<Uint8Array> {
 }
 
 export { aspectRatio };
+
+// ---------- name watermark ----------
+/** The moving watermark visits the corners in this order (diagonal jumps are hardest to crop out). */
+export const WATERMARK_CYCLE: Watermark['corner'][] = ['tl', 'br', 'tr', 'bl'];
+export const WATERMARK_SECONDS = 6;
+
+function watermarkFont(wm: Watermark, W: number) {
+    return `800 ${Math.max(10, Math.round(W * wm.size))}px CapMontserrat, 'Montserrat ExtraBold', sans-serif`;
+}
+
+/** Draws the watermark text with its own transparency at (x, y) top-left. */
+function paintWatermark(ctx: CanvasRenderingContext2D, wm: Watermark, W: number, x: number, y: number) {
+    const fs = Math.max(10, Math.round(W * wm.size));
+    ctx.save();
+    ctx.globalAlpha = wm.opacity;
+    ctx.font = watermarkFont(wm, W);
+    ctx.textBaseline = 'top';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(2, fs * 0.16);
+    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+    ctx.strokeText(wm.text.trim(), x, y);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(wm.text.trim(), x, y);
+    ctx.restore();
+}
+
+/** Size of the watermark image (text plus room for its outline). */
+const boxCache = new Map<string, { w: number; h: number; pad: number }>();
+export function watermarkBox(wm: Watermark, W: number): { w: number; h: number; pad: number } {
+    const key = `${wm.text}|${wm.size}|${W}|${document.fonts?.status}`;
+    const hit = boxCache.get(key);
+    if (hit) return hit;
+    const c = document.createElement('canvas').getContext('2d')!;
+    c.font = watermarkFont(wm, W);
+    const fs = Math.max(10, Math.round(W * wm.size));
+    const pad = Math.ceil(fs * 0.2);
+    const box = { w: Math.ceil(c.measureText(wm.text.trim()).width) + pad * 2, h: Math.ceil(fs * 1.25) + pad * 2, pad };
+    if (boxCache.size > 50) boxCache.clear();
+    boxCache.set(key, box);
+    return box;
+}
+
+/** Corner margins: top corners hug the edge, bottom corners stay above the progress bar. */
+export function watermarkMargins(W: number, H: number) {
+    return { m: Math.round(W * 0.035), mb: Math.round(Math.max(W * 0.035, H * 0.03)) };
+}
+
+export function watermarkCorner(wm: Watermark, outT: number): Watermark['corner'] {
+    return wm.moving ? WATERMARK_CYCLE[Math.floor(Math.max(0, outT) / WATERMARK_SECONDS) % 4] : wm.corner;
+}
+
+export function drawWatermark(ctx: CanvasRenderingContext2D, wm: Watermark, outT: number) {
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    const b = watermarkBox(wm, W);
+    const { m, mb } = watermarkMargins(W, H);
+    const corner = watermarkCorner(wm, outT);
+    const x = corner.endsWith('l') ? m : W - b.w - m;
+    const y = corner.startsWith('t') ? m : H - b.h - mb;
+    paintWatermark(ctx, wm, W, x + b.pad, y + b.pad);
+}
+
+/** The watermark as a small transparent PNG for ffmpeg. */
+export async function watermarkPng(wm: Watermark, W: number): Promise<Uint8Array> {
+    const b = watermarkBox(wm, W);
+    const c = document.createElement('canvas');
+    c.width = b.w;
+    c.height = b.h;
+    paintWatermark(c.getContext('2d')!, wm, W, b.pad, b.pad);
+    const blob: Blob = await new Promise((r) => c.toBlob((x) => r(x!), 'image/png'));
+    return new Uint8Array(await blob.arrayBuffer());
+}

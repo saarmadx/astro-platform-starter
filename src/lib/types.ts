@@ -96,7 +96,10 @@ export type Brand = {
     logoCorner: 'tl' | 'tr' | 'bl' | 'br';
     logoSize: number; // fraction of output width
     accent: string;
+    /** your name / @handle on every clip, so it can't be passed off as someone else's */
+    watermark?: Watermark;
 };
+export type Watermark = { text: string; corner: 'tl' | 'tr' | 'bl' | 'br'; size: number; opacity: number; moving: boolean };
 
 export type StyleSettings = {
     template: string;

@@ -49,3 +49,30 @@ Copied the ffmpeg core and MediaPipe wasm into public/
 16:28:40 [200] /studio 4ms
 16:28:40 [200] /studio 2ms
 16:28:48 [200] /studio 4ms
+16:35:13 [watch] src/lib/types.ts
+16:35:13 [watch] src/lib/types.ts
+16:35:13 [watch] /src/styles/globals.css, /src/components/Editor.tsx, /src/components/ProjectView.tsx, /src/components/Studio.tsx
+16:35:13 [watch] src/lib/draw.ts
+16:35:13 [watch] /src/styles/globals.css, /src/components/Editor.tsx, /src/components/ProjectView.tsx, /src/components/Studio.tsx
+16:35:13 [watch] src/lib/video.ts
+16:35:47 [watch] /src/styles/globals.css, /src/components/Editor.tsx, /src/components/ProjectView.tsx, /src/components/Studio.tsx
+16:35:47 [watch] src/lib/draw.ts
+16:35:47 [watch] /src/components/BrandKit.tsx, /src/styles/globals.css
+16:35:47 [watch] src/components/BrandKit.tsx
+16:35:47 [watch] /src/components/Timeline.tsx, /src/styles/globals.css
+16:35:47 [watch] src/components/Timeline.tsx
+16:35:47 [watch] /src/components/Editor.tsx, /src/styles/globals.css
+16:35:47 [watch] src/components/Editor.tsx
+16:36:05 [200] /studio 42ms
+16:36:06 [200] /studio 5ms
+16:36:06 [200] /studio 3ms
+16:36:15 [200] /studio 3ms
+16:36:53 [200] /studio 6ms
+16:36:53 [200] /studio 7ms
+16:37:02 [200] /studio 5ms
+16:37:15 [200] /studio 6ms
+16:37:15 [200] /studio 6ms
+16:37:23 [200] /studio 3ms
+16:37:41 [200] /studio 3ms
+16:37:41 [200] /studio 5ms
+16:37:50 [200] /studio 5ms

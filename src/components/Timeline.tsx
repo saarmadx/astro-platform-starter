@@ -254,6 +254,16 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
         p.onUpdate({ markers: near !== undefined ? markers.filter((m) => m !== near) : [...markers, src].sort((a, b) => a - b) });
     }
 
+    /** a text box at the playhead for 3 seconds (edit it in the Effects tab, drag it on the video) */
+    function addText() {
+        const a = Math.min(outNow.current, Math.max(0, outLen - 0.5));
+        const st = { id: `st${Date.now().toString(36)}`, text: 'Your text', start: srcOf(a), end: srcOf(Math.min(outLen, a + 3)), x: 0.5, y: 0.3, size: 0.07, color: '#ffffff', box: false };
+        const list = [...(clip.stickers ?? []), st];
+        p.onBeginEdit();
+        p.onUpdate({ stickers: list });
+        p.setSelection({ type: 'sticker', i: list.length - 1 });
+    }
+
     function addZoomAtPlayhead() {
         const start = srcOf(outNow.current);
         const z = { start, end: srcOf(Math.min(outLen, outNow.current + 1.5)), scale: 1.25 };
@@ -270,8 +280,8 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
     };
 
     // ---------- keyboard (Premiere-style) ----------
-    const keys = useRef({ splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen, trimToPlayhead, toggleMarker });
-    keys.current = { splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen, trimToPlayhead, toggleMarker };
+    const keys = useRef({ splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen, trimToPlayhead, toggleMarker, addText });
+    keys.current = { splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen, trimToPlayhead, toggleMarker, addText };
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             const tag = (e.target as HTMLElement)?.tagName;
@@ -297,6 +307,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
             else if (key === 'q' && !ctrl) k.trimToPlayhead('start');
             else if (key === 'w' && !ctrl) k.trimToPlayhead('end');
             else if (key === 'm' && !ctrl) k.toggleMarker();
+            else if (key === 't' && !ctrl) k.addText();
             else if (key === 'z' && !ctrl) k.addZoomAtPlayhead();
             else if ((key === 'y' && ctrl) || (key === 'z' && ctrl && e.shiftKey)) {
                 e.preventDefault();
@@ -532,6 +543,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                 <button className="tl-btn" onClick={() => splitAt(outNow.current)} title="Split at playhead (Ctrl+K)"><Scissors size={14} /> Split</button>
                 <button className="tl-btn" onClick={deleteSelection} disabled={!sel || sel.type === 'caption'} title="Delete the selection; the gap closes (Delete)"><Trash2 size={14} /> Delete</button>
                 <button className="tl-btn" onClick={addZoomAtPlayhead} title="Add a punch-in zoom at the playhead (Z)"><ZoomIn size={14} /> Zoom</button>
+                <button className="tl-btn" onClick={addText} title="Add text at the playhead (T)"><Type size={14} /> Text</button>
                 <button className="tl-btn" onClick={() => trimToPlayhead('start')} title="Remove from the start of this part to the playhead (Q)">⇤ Q</button>
                 <button className="tl-btn" onClick={() => trimToPlayhead('end')} title="Remove from the playhead to the end of this part (W)">W ⇥</button>
                 <button className="tl-btn" onClick={toggleMarker} title="Add or remove a marker at the playhead (M)"><Flag size={13} /> Marker</button>
@@ -845,7 +857,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
             )}
 
             <p className="tl-help">
-                <b>V</b> select · <b>C</b> razor · <b>Ctrl+K</b> split at playhead · <b>Q</b>/<b>W</b> trim to playhead · <b>M</b> marker · <b>Del</b> delete part · <b>J K L</b> back / pause / play · <b>←→</b> frame · <b>↑↓</b> previous / next cut · <b>S</b> snapping · <b>Ctrl+scroll</b> zoom · right-click a part to change its layout
+                <b>V</b> select · <b>C</b> razor · <b>Ctrl+K</b> split at playhead · <b>Q</b>/<b>W</b> trim to playhead · <b>M</b> marker · <b>T</b> text · <b>Del</b> delete part · <b>J K L</b> back / pause / play · <b>←→</b> frame · <b>↑↓</b> previous / next cut · <b>S</b> snapping · <b>Ctrl+scroll</b> zoom · right-click a part to change its layout
             </p>
         </div>
     );

@@ -2,7 +2,7 @@ import { FFmpeg, FFFSType } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { bleepSpans } from './censor';
 import { buildAss, captionSize, captionY, displayWords, emojiEvents, groupWords } from './captions';
-import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiPng, pipBox, textOverlayPng } from './draw';
+import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiPng, pipBox, textOverlayPng, WATERMARK_CYCLE, WATERMARK_SECONDS, watermarkMargins, watermarkPng } from './draw';
 import { allShakes, allSfx, allZooms, replayLength } from './fx';
 import { sfxWav } from './sfx';
 import { cropPath, cropWindow, outputSize } from './geometry';
@@ -209,6 +209,7 @@ async function prepareAssets(o: RenderOptions, W: number, H: number): Promise<As
     if (clip.hookTitle?.text.trim() && clip.hookTitle.seconds > 0) files.push({ path: '/title.png', data: await textOverlayPng(W, H, (ctx) => drawHookTitleText(ctx, clip.hookTitle!.text, style)) });
     if (clip.freeze && clip.freeze.seconds > 0 && clip.freeze.text.trim()) files.push({ path: '/freeze.png', data: await textOverlayPng(W, H, (ctx) => drawFreezeText(ctx, clip.freeze!.text, style)) });
     if (o.brand.logo) files.push({ path: '/logo.png', data: dataUrlBytes(o.brand.logo) });
+    if (o.brand.watermark?.text.trim()) files.push({ path: '/wm.png', data: await watermarkPng(o.brand.watermark, W) });
     if (replayLength(clip) > 0) files.push({ path: '/replay.png', data: await textOverlayPng(W, H, (ctx) => drawReplayBadge(ctx)) });
     for (let i = 0; i < (clip.stickers ?? []).length; i++) files.push({ path: `/sticker_${i}.png`, data: await textOverlayPng(W, H, (ctx) => drawSticker(ctx, clip.stickers![i])) });
     if (style.emojis && tpl.id !== 'none') {
@@ -309,6 +310,28 @@ function finishing(o: RenderOptions, g: string[], inputs: string[], v: string, n
         g.push(`[${n}:v]scale=${lw}:-1[lg]`);
         g.push(`[${v}][lg]overlay=${o.brand.logoCorner.endsWith('l') ? m : `W-w-${m}`}:${o.brand.logoCorner.startsWith('t') ? m : `H-h-${m}`}[vl]`);
         v = 'vl';
+        n++;
+    }
+    const wm = o.brand.watermark;
+    if (wm?.text.trim()) {
+        inputs.push('-i', '/wm.png');
+        const { m, mb } = watermarkMargins(W, H);
+        const xs = (c: string) => (c.endsWith('l') ? `${m}` : `W-w-${m}`);
+        const ys = (c: string) => (c.startsWith('t') ? `${m}` : `H-h-${mb}`);
+        let x: string;
+        let y: string;
+        if (wm.moving) {
+            // jumps corner every few seconds, counted in the finished video's time like the preview
+            const idx = `mod(floor((t+${ws.toFixed(3)})/${WATERMARK_SECONDS}),4)`;
+            const pick = (f: (c: string) => string) => WATERMARK_CYCLE.reduceRight((acc, c, i) => `if(eq(${idx},${i}),${f(c)},${acc})`, f(WATERMARK_CYCLE[0]));
+            x = pick(xs);
+            y = pick(ys);
+        } else {
+            x = xs(wm.corner);
+            y = ys(wm.corner);
+        }
+        g.push(`[${v}][${n}:v]overlay=x='${x}':y='${y}'[vwm]`);
+        v = 'vwm';
         n++;
     }
     if (style.progressBar) {
