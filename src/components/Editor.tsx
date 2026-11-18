@@ -223,7 +223,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             await new Promise((r) => (v.onloadeddata = r));
             const from = Math.max(0, clip.start - 10);
             const to = Math.min(project.duration, clip.end + 10);
-            const step = Math.max(1, (to - from) / 30);
+            const step = Math.max(0.75, (to - from) / 80);
             const c = document.createElement('canvas');
             c.width = 96;
             c.height = Math.round((96 * v.videoHeight) / v.videoWidth) || 54;
@@ -235,7 +235,11 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                 });
                 c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
                 out.push({ t, url: c.toDataURL('image/jpeg', 0.6) });
-                if (out.length % 6 === 0 && !cancelled) setThumbs([...out]);
+                // new thumbnails replace old ones as they're made, so the strip never goes blank
+                if (out.length % 6 === 0 && !cancelled) {
+                    const upTo = t;
+                    setThumbs((prev) => [...out, ...prev.filter((x) => x.t > upTo + step / 2)].sort((x, y) => x.t - y.t));
+                }
             }
             if (!cancelled) setThumbs(out);
             v.removeAttribute('src');
@@ -244,7 +248,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         return () => {
             cancelled = true;
         };
-    }, [clip?.id, video?.url]);
+    }, [clip?.id, video?.url, Math.floor((clip?.start ?? 0) / 15), Math.ceil((clip?.end ?? 0) / 15)]);
 
     selectedStickerRef.current = selection?.type === 'sticker' ? selection.i : null;
     if (!clip) return <p className="text-muted">This clip no longer exists.</p>;

@@ -24,7 +24,8 @@ import {
     ZoomIn,
     ZoomOut,
     AudioLines,
-    FastForward
+    FastForward,
+    Flag
 } from 'lucide-react';
 import { groupTimes, type DWord } from '../lib/captions';
 import { replayLength } from '../lib/fx';
@@ -123,6 +124,9 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
     const [snap, setSnap] = useState(true);
     const [menu, setMenu] = useState<null | { x: number; y: number; segId: string }>(null);
     const [viewX, setViewX] = useState(0);
+    const [hint, setHint] = useState<null | { x: number; y: number; text: string }>(null);
+    const snapLineRef = useRef<HTMLDivElement>(null);
+    const snapHit = useRef<number | null>(null);
     const scrollRaf = useRef(0);
     const drag = useRef<null | { kind: string; startX: number; orig: Clip; index?: number; segId?: string; moved: boolean }>(null);
     const outNow = useRef(0);
@@ -217,6 +221,39 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
         p.setSelection(null);
     }
 
+    /** Q / W: remove from the start of the part under the playhead up to it, or from it to the part's end */
+    function trimToPlayhead(side: 'start' | 'end') {
+        const t = snapFrame(outNow.current);
+        const hit = segOut.find((r) => t >= r.start - 0.001 && t <= r.end + 0.001);
+        if (!hit) return;
+        const at = hit.seg.start + (t - hit.start);
+        const next = segs.flatMap((s) => {
+            if (s.id !== hit.seg.id) return [s];
+            const n = side === 'start' ? { ...s, start: at } : { ...s, end: at };
+            return n.end - n.start < 0.2 ? [] : [n];
+        });
+        if (!next.length) return;
+        commitSegs(next);
+        // the gap closes, so the playhead stays on the new cut
+        p.onSeekOut(side === 'start' ? hit.start : Math.max(0, t - 0.01));
+    }
+
+    /** take more of the video before the first part or after the last one */
+    function extend(side: 'before' | 'after', secs = 5) {
+        const list = [...segs];
+        if (side === 'before') list[0] = { ...list[0], start: Math.max(0, list[0].start - secs) };
+        else list[list.length - 1] = { ...list[list.length - 1], end: Math.min(p.duration, list[list.length - 1].end + secs) };
+        commitSegs(list);
+    }
+
+    const markers = clip.markers ?? [];
+    function toggleMarker() {
+        const src = srcOf(outNow.current);
+        const near = markers.find((m) => Math.abs(outOf(m) - outNow.current) < 0.15);
+        p.onBeginEdit();
+        p.onUpdate({ markers: near !== undefined ? markers.filter((m) => m !== near) : [...markers, src].sort((a, b) => a - b) });
+    }
+
     function addZoomAtPlayhead() {
         const start = srcOf(outNow.current);
         const z = { start, end: srcOf(Math.min(outLen, outNow.current + 1.5)), scale: 1.25 };
@@ -226,15 +263,15 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
         p.setSelection({ type: 'zoom', i: list.indexOf(z) });
     }
 
-    const editPoints = useMemo(() => [0, ...segOut.map((r) => r.end), seqLen], [segOut, seqLen]);
+    const editPoints = useMemo(() => [0, ...segOut.map((r) => r.end), ...markers.map((m) => toOutputClamped(clip, m, spans)), seqLen].sort((a, b) => a - b), [segOut, seqLen, markers, clip, spans]);
     const fit = () => {
         setZoom(1);
         if (scrollRef.current) scrollRef.current.scrollLeft = 0;
     };
 
     // ---------- keyboard (Premiere-style) ----------
-    const keys = useRef({ splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen });
-    keys.current = { splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen };
+    const keys = useRef({ splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen, trimToPlayhead, toggleMarker });
+    keys.current = { splitAt, deleteSelection, addZoomAtPlayhead, fit, p, editPoints, outLen, trimToPlayhead, toggleMarker };
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             const tag = (e.target as HTMLElement)?.tagName;
@@ -257,6 +294,9 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
             } else if (key === 'v' && !ctrl) setTool('select');
             else if (key === 'c' && !ctrl) setTool('razor');
             else if (key === 's' && !ctrl) setSnap((x) => !x);
+            else if (key === 'q' && !ctrl) k.trimToPlayhead('start');
+            else if (key === 'w' && !ctrl) k.trimToPlayhead('end');
+            else if (key === 'm' && !ctrl) k.toggleMarker();
             else if (key === 'z' && !ctrl) k.addZoomAtPlayhead();
             else if ((key === 'y' && ctrl) || (key === 'z' && ctrl && e.shiftKey)) {
                 e.preventDefault();
@@ -311,6 +351,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                 dist = Math.abs(c - t);
                 best = c;
             }
+        snapHit.current = best !== t ? best : null;
         return best;
     };
 
@@ -342,6 +383,14 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
         const toOut = (src: number) => toOutputClamped(o, src, oSpans);
 
         if (d.kind === 'scrub') return p.onSeekOut(Math.max(0, Math.min(seqLen, xToOut(e.clientX))));
+        snapHit.current = null;
+        const showSnap = () => {
+            const el = snapLineRef.current;
+            if (!el) return;
+            el.style.opacity = snapHit.current !== null ? '1' : '0';
+            if (snapHit.current !== null) el.style.transform = `translateX(${X(snapHit.current)}px)`;
+        };
+        const label = (text: string) => setHint({ x: e.clientX, y: e.clientY, text });
 
         if ((d.kind === 'trim-l' || d.kind === 'trim-r') && d.segId) {
             const list = segmentsOf(o);
@@ -363,6 +412,10 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                 list[i] = { ...s, end: snapFrame(ne) };
             }
             p.onUpdate(withSegs(o, list));
+            const len = list[i].end - list[i].start;
+            const diff = len - (s.end - s.start);
+            label(`Part ${i + 1}: ${len.toFixed(2)}s (${diff >= 0 ? '+' : '−'}${Math.abs(diff).toFixed(2)}s)`);
+            showSnap();
             return;
         }
 
@@ -384,12 +437,16 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
             const list = [...(o.zooms ?? [])];
             list[d.index] = { ...z, ...moveSpan(z.start, z.end, d.kind.slice(5)) };
             p.onUpdate({ zooms: list });
+            label(`Zoom ${timecode(toOutputClamped(o, list[d.index].start, oSpans)).slice(3)} · ${(list[d.index].end - list[d.index].start).toFixed(2)}s`);
+            showSnap();
         } else if (d.kind.startsWith('sticker-') && d.index !== undefined) {
             const st = (o.stickers ?? [])[d.index];
             if (!st) return;
             const list = [...(o.stickers ?? [])];
             list[d.index] = { ...st, ...moveSpan(st.start, st.end, d.kind.slice(8)) };
             p.onUpdate({ stickers: list });
+            label(`Sticker ${(list[d.index].end - list[d.index].start).toFixed(2)}s`);
+            showSnap();
         } else if (d.kind === 'sfx' && d.index !== undefined) {
             const list = [...(o.sfx ?? [])];
             list[d.index] = { ...list[d.index], t: toSrc(Math.max(0, Math.min(outLen, snapOut(toOut(list[d.index].t) + dt)))) };
@@ -407,6 +464,8 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
 
     function onPointerUp() {
         drag.current = null;
+        setHint(null);
+        if (snapLineRef.current) snapLineRef.current.style.opacity = '0';
     }
 
     function clickSeg(e: React.MouseEvent, id: string) {
@@ -473,6 +532,12 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
                 <button className="tl-btn" onClick={() => splitAt(outNow.current)} title="Split at playhead (Ctrl+K)"><Scissors size={14} /> Split</button>
                 <button className="tl-btn" onClick={deleteSelection} disabled={!sel || sel.type === 'caption'} title="Delete the selection; the gap closes (Delete)"><Trash2 size={14} /> Delete</button>
                 <button className="tl-btn" onClick={addZoomAtPlayhead} title="Add a punch-in zoom at the playhead (Z)"><ZoomIn size={14} /> Zoom</button>
+                <button className="tl-btn" onClick={() => trimToPlayhead('start')} title="Remove from the start of this part to the playhead (Q)">⇤ Q</button>
+                <button className="tl-btn" onClick={() => trimToPlayhead('end')} title="Remove from the playhead to the end of this part (W)">W ⇥</button>
+                <button className="tl-btn" onClick={toggleMarker} title="Add or remove a marker at the playhead (M)"><Flag size={13} /> Marker</button>
+                <div className="tl-sep" />
+                <button className="tl-btn" onClick={() => extend('before')} disabled={segs[0].start <= 0.01} title="Take 5 more seconds of the video before the clip">+5s before</button>
+                <button className="tl-btn" onClick={() => extend('after')} disabled={segs[segs.length - 1].end >= p.duration - 0.01} title="Take 5 more seconds of the video after the clip">+5s after</button>
                 <div className="tl-sep" />
                 <button className="tl-icon" onClick={p.onUndo} disabled={!p.canUndo} title="Undo (Ctrl+Z)"><Undo2 size={15} /></button>
                 <button className="tl-icon" onClick={p.onRedo} disabled={!p.canRedo} title="Redo (Ctrl+Shift+Z)"><Redo2 size={15} /></button>
@@ -735,12 +800,32 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
 
                         {/* razor guide and playhead */}
                         <div ref={razorLineRef} className="tl-razor-line" style={{ height: TOTAL_H }} />
+                        <div ref={snapLineRef} className="tl-snap-line" style={{ height: TOTAL_H }} />
+                        {markers.map((m) =>
+                            visible(m) ? (
+                                <button
+                                    key={m}
+                                    className="tl-marker"
+                                    style={{ left: X(outOf(m)) - 6 }}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={() => p.onSeekOut(outOf(m))}
+                                    onDoubleClick={() => {
+                                        p.onBeginEdit();
+                                        p.onUpdate({ markers: markers.filter((x) => x !== m) });
+                                    }}
+                                    title="Marker: click to jump, double-click to remove"
+                                    aria-label="Marker"
+                                />
+                            ) : null
+                        )}
                         <div ref={playheadRef} className="tl-playhead" style={{ height: TOTAL_H }}>
                             <div className="tl-playhead-head" />
                         </div>
                     </div>
                 </div>
             </div>
+
+            {hint && <div className="tl-hint" style={{ left: hint.x + 12, top: hint.y - 34 }}>{hint.text}</div>}
 
             {/* right-click menu */}
             {menu && (
@@ -760,7 +845,7 @@ const Timeline = forwardRef<TimelineApi, Props>(function Timeline(p, ref) {
             )}
 
             <p className="tl-help">
-                <b>V</b> select · <b>C</b> razor · <b>Ctrl+K</b> split at playhead · <b>Del</b> delete part · <b>J K L</b> back / pause / play · <b>←→</b> frame · <b>↑↓</b> previous / next cut · <b>S</b> snapping · <b>Ctrl+scroll</b> zoom · right-click a part to change its layout
+                <b>V</b> select · <b>C</b> razor · <b>Ctrl+K</b> split at playhead · <b>Q</b>/<b>W</b> trim to playhead · <b>M</b> marker · <b>Del</b> delete part · <b>J K L</b> back / pause / play · <b>←→</b> frame · <b>↑↓</b> previous / next cut · <b>S</b> snapping · <b>Ctrl+scroll</b> zoom · right-click a part to change its layout
             </p>
         </div>
     );

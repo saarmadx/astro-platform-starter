@@ -20,3 +20,32 @@ Copied the ffmpeg core and MediaPipe wasm into public/
 16:23:59 watching for file changes...
 16:24:06 [200] /studio 117ms
 16:24:06 [200] /studio 5ms
+16:25:26 [watch] src/lib/types.ts
+16:25:26 [watch] src/lib/types.ts
+16:25:26 [watch] /src/components/Timeline.tsx, /src/styles/globals.css
+16:25:26 [watch] src/components/Timeline.tsx
+16:25:26 [watch] /src/styles/globals.css
+16:25:26 [watch] /src/components/Editor.tsx, /src/styles/globals.css
+16:25:26 [watch] src/components/Editor.tsx
+16:25:52 [200] /studio 95ms
+16:25:52 [200] /studio 3ms
+16:25:52 [200] /studio 5ms
+16:26:01 [200] /studio 3ms
+16:26:35 [watch] /src/components/Editor.tsx, /src/styles/globals.css
+16:26:35 [watch] src/components/Editor.tsx
+16:26:41 [200] /studio 30ms
+16:26:41 [200] /studio 6ms
+16:26:49 [200] /studio 4ms
+16:27:10 [200] /studio 7ms
+16:27:10 [200] /studio 3ms
+16:27:18 [200] /studio 4ms
+16:27:28 [200] /studio 3ms
+16:27:28 [200] /studio 4ms
+16:27:36 [200] /studio 3ms
+16:27:54 [200] /studio 4ms
+16:27:54 [200] /studio 6ms
+16:28:18 [200] /studio 3ms
+16:28:18 [200] /studio 4ms
+16:28:40 [200] /studio 4ms
+16:28:40 [200] /studio 2ms
+16:28:48 [200] /studio 4ms

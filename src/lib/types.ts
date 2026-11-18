@@ -56,6 +56,8 @@ export type Clip = {
     replay?: { start: number; end: number; speed: number };
     /** text stickers placed on the video */
     stickers?: Sticker[];
+    /** timeline markers (absolute source times) */
+    markers?: number[];
     /** an effect (and optional sound) at every cut between parts */
     transition?: { kind: 'none' | 'flash' | 'shake' | 'zoom'; sound?: SfxKind | null };
     /** translated captions, one line per caption block (absolute source times) */

@@ -186,6 +186,10 @@
     .tl-playhead-head { position: absolute; top: 0; left: -6px; width: 13px; height: 14px; background: #ef4444; clip-path: polygon(0 0, 100% 0, 100% 60%, 50% 100%, 0 60%); }
     .tl-razor-line { @apply pointer-events-none absolute top-0 left-0 z-20 w-px bg-white/80 opacity-0; }
 
+    .tl-snap-line { @apply pointer-events-none absolute top-0 left-0 z-20 w-px bg-yellow-300 opacity-0; box-shadow: 0 0 6px rgb(253 224 71 / 0.8); }
+    .tl-marker { @apply absolute top-1 z-[15] h-3.5 w-3 cursor-pointer bg-yellow-300; clip-path: polygon(0 0, 100% 0, 100% 70%, 50% 100%, 0 70%); }
+    .tl-marker:hover { @apply bg-yellow-200; }
+    .tl-hint { @apply pointer-events-none fixed z-50 rounded-md bg-black/85 px-2 py-1 font-mono text-[11px] whitespace-nowrap text-white shadow-lg ring-1 ring-white/15; }
     .tl-menu { @apply fixed z-50 min-w-60 rounded-lg border border-white/10 bg-[#1b1e25] p-1 text-xs shadow-2xl; }
     .tl-menu button { @apply flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-white/85 hover:bg-accent hover:text-ink; }
     .tl-menu kbd { @apply ml-auto border-none bg-transparent text-white/40; }
