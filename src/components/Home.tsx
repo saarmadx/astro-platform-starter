@@ -3,6 +3,7 @@ import { TEMPLATES } from '../lib/templates';
 import { LANGUAGES } from '../lib/localAsr';
 import type { Aspect, AsrEngine, AsrQuality, ContentMode, Picker, Project } from '../lib/types';
 import { TemplateSwatch } from './ui';
+import { BUILT_IN_TEMPLATES, loadPresets, type Preset } from '../lib/presets';
 
 export type NewProjectInput = {
     file: File;
@@ -13,6 +14,8 @@ export type NewProjectInput = {
     options: Project['options'];
     /** captions-only: keep the video's own shape */
     keepShape?: boolean;
+    /** a look applied to every clip */
+    preset?: Preset;
 };
 
 const LENGTHS = [
@@ -25,6 +28,7 @@ const LENGTHS = [
 export const MODES: { id: ContentMode; label: string; hint: string }[] = [
     { id: 'viral', label: 'Most viral', hint: 'Best of everything' },
     { id: 'funny', label: 'Funny', hint: 'Jokes, banter, reactions' },
+    { id: 'gaming', label: '🎮 Gaming', hint: 'Rage, fails, chaos, hype' },
     { id: 'insightful', label: 'Insightful', hint: 'Advice and facts' },
     { id: 'story', label: 'Stories', hint: 'Anecdotes with a payoff' },
     { id: 'hot-takes', label: 'Hot takes', hint: 'Bold opinions, debates' }
@@ -45,7 +49,7 @@ const ASPECTS: { id: Aspect; label: string; hint: string }[] = [
 type Props = {
     projects: Project[];
     running: Record<string, { label: string; ratio: number }>;
-    onCreate: (input: NewProjectInput) => Promise<void>;
+    onCreate: (inputs: NewProjectInput[]) => Promise<void>;
     onOpen: (id: string) => void;
     onOpenClip: (projectId: string, clipId: string) => void;
     onRestore: (projects: Project[]) => void;
@@ -54,7 +58,12 @@ type Props = {
 };
 
 export default function Home({ projects, running, onCreate, onOpen, onOpenClip, onRestore, accessCode, setAccessCode }: Props) {
-    const [file, setFile] = useState<File | null>(null);
+    const [files, setFiles] = useState<File[]>([]);
+    const file = files[0] ?? null;
+    const [presetName, setPresetName] = useState('');
+    const [savedPresets, setSavedPresets] = useState<Preset[]>([]);
+    useEffect(() => setSavedPresets(loadPresets()), []);
+    const allPresets = [...BUILT_IN_TEMPLATES, ...savedPresets];
     const [job, setJob] = useState<'clips' | 'captions'>('clips');
     const [keepShape, setKeepShape] = useState(true);
     const captionsOnly = job === 'captions';
@@ -97,14 +106,16 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
 
-    function pick(f?: File) {
-        if (!f) return;
-        if (!f.type.startsWith('video/') && !/\.(mp4|mov|mkv|webm|m4v)$/i.test(f.name)) {
+    function pick(list?: FileList | File[] | null) {
+        const all = Array.from(list ?? []);
+        if (!all.length) return;
+        const ok = all.filter((f) => f.type.startsWith('video/') || /\.(mp4|mov|mkv|webm|m4v)$/i.test(f.name));
+        if (!ok.length) {
             setError('Please choose a video file (MP4, MOV, WebM or MKV).');
             return;
         }
-        setError('');
-        setFile(f);
+        setError(ok.length < all.length ? `Skipped ${all.length - ok.length} file(s) that are not videos.` : '');
+        setFiles(ok);
     }
 
     async function start() {
@@ -113,7 +124,23 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
         const tpl = TEMPLATES.find((t) => t.id === template)!;
         setBusy(true);
         try {
-            await onCreate({ file, chatFile: chatFile ?? undefined, aspect, template, highlight: tpl.defaultHighlight, keepShape: captionsOnly && keepShape, options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality, captionsOnly } });
+            const preset = captionsOnly ? undefined : allPresets.find((p) => p.name === presetName);
+            await onCreate(
+                files.map((f) => ({
+                    file: f,
+                    // a chat replay belongs to one stream, so it is only used for a single video
+                    chatFile: files.length === 1 ? chatFile ?? undefined : undefined,
+                    aspect,
+                    template,
+                    highlight: tpl.defaultHighlight,
+                    keepShape: captionsOnly && keepShape,
+                    preset,
+                    options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality, captionsOnly }
+                }))
+            );
+            // a batch stays on this page: get ready for the next one
+            setBusy(false);
+            setFiles([]);
         } catch (e) {
             setError((e as Error).message);
             setBusy(false);
@@ -144,12 +171,23 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                             onDragOver={(e) => e.preventDefault()}
                             onDrop={(e) => {
                                 e.preventDefault();
-                                pick(e.dataTransfer.files[0]);
+                                pick(e.dataTransfer.files);
                             }}
                         >
-                            <input type="file" accept="video/*,.mkv" className="sr-only" onChange={(e) => pick(e.target.files?.[0])} />
+                            <input type="file" accept="video/*,.mkv" multiple className="sr-only" onChange={(e) => pick(e.target.files)} />
                             <span className="grid size-14 place-items-center rounded-full bg-accent text-2xl text-ink">↑</span>
-                            {file ? (
+                            {files.length > 1 ? (
+                                <>
+                                    <span className="font-semibold">{files.length} videos</span>
+                                    <span className="max-w-full text-left text-xs text-muted">
+                                        {files.slice(0, 5).map((f) => (
+                                            <span key={f.name} className="block truncate">• {f.name}</span>
+                                        ))}
+                                        {files.length > 5 && <span className="block">…and {files.length - 5} more</span>}
+                                    </span>
+                                    <span className="text-sm text-muted">Processed one after another · click to change</span>
+                                </>
+                            ) : file ? (
                                 <>
                                     <span className="font-semibold break-all">{file.name}</span>
                                     <span className="text-sm text-muted">{(file.size / 1048576).toFixed(0)} MB · click to change</span>
@@ -157,13 +195,13 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                             ) : (
                                 <>
                                     <span className="font-semibold">Drop a video or click to upload</span>
-                                    <span className="text-sm text-muted">Podcasts, interviews, talks and streams work best</span>
+                                    <span className="text-sm text-muted">Streams, podcasts and talks work best · pick several to batch them</span>
                                 </>
                             )}
                         </label>
                         {error && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{error}</p>}
                         <button className="btn-accent" disabled={!file || busy} onClick={start}>
-                            {busy ? 'Starting…' : captionsOnly ? 'Add captions' : 'Get clips in 1 click'}
+                            {busy ? 'Starting…' : files.length > 1 ? (captionsOnly ? `Add captions to ${files.length} videos` : `Get clips from ${files.length} videos`) : captionsOnly ? 'Add captions' : 'Get clips in 1 click'}
                         </button>
                         <p className="text-xs text-muted">Only clip videos you own or have permission to use. Your video stays in your browser; only the audio is sent for transcription.</p>
                     </div>
@@ -179,6 +217,16 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                             </select>
                         </Option>
                         {!captionsOnly && (<>
+                        <Option label="Template (applied to every clip)">
+                            <div className="grid grid-cols-2 gap-2">
+                                {[{ name: '', builtIn: true } as Preset & { name: string }, ...allPresets].map((p) => (
+                                    <button key={p.name || 'none'} onClick={() => setPresetName(p.name)} className={`rounded-xl border px-3 py-2 text-left ${presetName === p.name ? 'border-accent bg-accent/10' : 'border-white/10 hover:bg-white/5'}`}>
+                                        <span className="block truncate text-sm font-bold">{p.name || 'None'}</span>
+                                        <span className="block truncate text-xs text-muted">{p.name ? (p.builtIn ? templateHint(p) : 'Your saved preset') : 'Set up each clip yourself'}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </Option>
                         <Option label="How to pick clips">
                             <div className="grid gap-2 sm:grid-cols-3">
                                 {PICKERS.map((m) => (
@@ -238,8 +286,8 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                             </label>
                             <span className="text-xs text-muted">Twitch chat JSON (TwitchDownloader), YouTube live chat JSON (yt-dlp) or a text log with timestamps.</span>
                         </Option>
-                        <Option label="Topics to look for (optional)">
-                            <input className="input" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. money tips, funny stories" />
+                        <Option label="Game or topic (optional, also added as a hashtag)">
+                            <input className="input" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. GTA 6" />
                         </Option>
                         </>)}
                         <details className="text-sm">
@@ -386,6 +434,18 @@ function statusText(p: Project, run?: { label: string; ratio: number }) {
     if (p.status === 'ready') return `${p.clips.length} clips`;
     if (p.status === 'error') return 'Needs attention';
     if (p.status === 'awaiting-paste') return 'Your turn: paste Claude’s answer';
+    if (run?.label.startsWith('Waiting in line')) return 'In line, waiting';
     if (run) return `Working… ${Math.round(run.ratio * 100)}%`;
     return 'Stopped – open to continue';
+}
+
+function templateHint(p: Preset): string {
+    const bits: string[] = [];
+    if (p.style.layout === 'split') bits.push('facecam on top');
+    if (p.style.layout === 'pip') bits.push('facecam bubble');
+    if (p.fx.transition && p.fx.transition.kind !== 'none') bits.push(`${p.fx.transition.kind} cuts`);
+    if (p.fx.replay) bits.push('replay');
+    if (p.fx.silences) bits.push('no pauses');
+    if (p.fx.sfx) bits.push('sounds');
+    return bits.join(' · ') || 'Title + zooms';
 }

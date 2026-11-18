@@ -10,7 +10,7 @@ const MODEL = 'claude-opus-5-5';
 
 type Segment = { start: number; end: number; text: string };
 type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud'; strength: number };
-type Mode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-takes';
+type Mode = import('../../lib/types').ContentMode;
 
 // ---------- schemas ----------
 
@@ -164,12 +164,12 @@ export const POST: APIRoute = async ({ request }) => {
             .join('\n\n');
         const final = await ask<{ clips: Clip[] }>(
             system,
-            `${reviewed}\n\nYou are the final editor. Each candidate above includes the transcript around it. For each one, judge honestly whether it truly works as a standalone clip for a stranger${mode === 'funny' ? ' (would they actually laugh?)' : ''}. Then choose the best ${maxClips} at most, and drop anything weak even if that leaves fewer clips.
+            `${reviewed}\n\nYou are the final editor. Each candidate above includes the transcript around it. For each one, judge honestly whether it truly works as a standalone clip for a stranger${(mode === 'funny' || mode === 'gaming') ? ' (would they actually laugh?)' : ''}. Then choose the best ${maxClips} at most, and drop anything weak even if that leaves fewer clips.
 
 For every clip you keep:
-- Fix the start and end using the transcript timestamps: start right at the hook or setup, end right after the payoff${mode === 'funny' ? ' or laugh, keeping any reaction that follows the punchline' : ''}.
+- Fix the start and end using the transcript timestamps: start right at the hook or setup, end right after the payoff${(mode === 'funny' || mode === 'gaming') ? ' or laugh, keeping any reaction that follows the punchline' : ''}.
 - Keep it between ${minSeconds} and ${maxSeconds} seconds.
-- Score it 0-100 honestly with the four part scores (hook, flow, value = how ${mode === 'funny' ? 'funny' : 'valuable or entertaining'} it is, shareability).
+- Score it 0-100 honestly with the four part scores (hook, flow, value = how ${(mode === 'funny' || mode === 'gaming') ? 'funny' : 'valuable or entertaining'} it is, shareability).
 - Write a title that is specific to the moment, a hook line quoted from the clip, 3-6 keywords that are single words actually spoken in the clip, 2-4 emoji each tied to one spoken word, and 3 alternative titles in different styles (a quote, a question, a "POV:" or reaction style).${focus}`,
             CLIPS_SCHEMA,
             'high'

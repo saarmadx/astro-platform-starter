@@ -4,7 +4,7 @@ export type Energy = { step: number; db: number[] };
 export type Transcript = { language: string; words: Word[]; segments: Segment[]; energy?: Energy };
 export type AudioEvent = { start: number; end: number; type: 'reaction' | 'loud' | 'chat'; strength: number; label?: string };
 
-export type ContentMode = 'viral' | 'funny' | 'insightful' | 'story' | 'hot-takes';
+export type ContentMode = 'viral' | 'funny' | 'gaming' | 'insightful' | 'story' | 'hot-takes';
 /** where captions come from: free on this PC, or OpenAI (paid) */
 export type AsrEngine = 'local' | 'openai';
 /** how clips are picked: free laugh detector, free via Claude chat copy/paste, or Claude API (paid) */
@@ -148,6 +148,8 @@ export type Project = {
         picker?: Picker;
         /** just caption the whole video, no clip finding */
         captionsOnly?: boolean;
+        /** effects applied to every clip once they are found (from a template) */
+        fx?: import('./presets').PresetFx;
     };
     thumb?: string;
     /** who is speaking from each time on (speaker index into style.speakerColors) */

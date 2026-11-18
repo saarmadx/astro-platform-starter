@@ -1,6 +1,6 @@
 // Free clip picking with no AI: builds clips around the biggest laughs and reactions.
 // The line just before a burst of laughter is usually the punchline.
-import type { AudioEvent, Clip, Segment, Transcript } from './types';
+import type { AudioEvent, Clip, ContentMode, Segment, Transcript } from './types';
 
 const STOP = new Set(
     'about above after again against because been before being below between both could does doing down during each from further have having here hers herself himself into itself just more most other ourselves over same should some such than that their theirs them themselves then there these they this those through under until very what when where which while whom will with would your yours yourself yourselves really gonna wanna kinda like yeah okay right thing things know mean think'.split(' ')
@@ -11,14 +11,17 @@ const sentenceStart = (segs: Segment[], i: number) => i === 0 || /[.!?]$/.test(s
 export function pickByLaughs(
     t: Transcript,
     events: AudioEvent[],
-    o: { minSeconds: number; maxSeconds: number; maxClips: number },
+    o: { minSeconds: number; maxSeconds: number; maxClips: number; mode?: ContentMode },
     duration: number
 ): Clip[] {
     const segs = t.segments;
     if (!segs.length) return [];
     // chat spikes first (strongest signal), then laughs heard in the audio
-    const reactions = [...events.filter((e) => e.type === 'chat').sort((a, b) => b.strength - a.strength), ...events.filter((e) => e.type === 'reaction').sort((a, b) => b.strength - a.strength)];
-    const louds = events.filter((e) => e.type === 'loud').sort((a, b) => b.strength - a.strength);
+    const gaming = o.mode === 'gaming';
+    const chats = events.filter((e) => e.type === 'chat').sort((a, b) => b.strength - a.strength);
+    // gaming: rage and hype (loud voices) are as good as laughs, so they are ranked together
+    const reactions = [...chats, ...events.filter((e) => e.type === 'reaction' || (gaming && e.type === 'loud')).sort((a, b) => b.strength - a.strength)];
+    const louds = gaming ? [] : events.filter((e) => e.type === 'loud').sort((a, b) => b.strength - a.strength);
     const maxStrength = Math.max(...events.map((e) => e.strength), -60);
     const minStrength = Math.min(...events.map((e) => e.strength), -60);
     const chosen: Clip[] = [];
@@ -64,13 +67,13 @@ export function pickByLaughs(
             title: shortTitle ? `“${shortTitle.replace(/[.,]$/, '')}”` : 'Funny moment',
             start,
             end,
-            category: kind === 'reaction' ? 'Funny' : 'Surprising',
+            category: gaming ? (e.type === 'loud' ? 'Hype' : 'Funny') : kind === 'reaction' ? 'Funny' : 'Surprising',
             hook: hook.length > 90 ? `${hook.slice(0, 88)}…` : hook,
             score,
             subscores: { hook: Math.max(40, score - 8), flow: Math.max(40, score - 4), value: score, shareability: Math.max(40, score - 6) },
             reason: isChat ? `Stream chat exploded here (${e.label}).` : kind === 'reaction' ? `A ${laughLen.toFixed(1)}s burst of laughter or reaction comes right after this line.` : 'Voices get loud and excited here.',
             description: shortTitle,
-            hashtags: kind === 'reaction' ? ['funny', 'shorts', 'comedy'] : ['shorts'],
+            hashtags: gaming ? ['gaming', 'shorts', 'funny'] : kind === 'reaction' ? ['funny', 'shorts', 'comedy'] : ['shorts'],
             keywords,
             emojis: lastWord ? [{ word: lastWord.text, emoji: kind === 'reaction' ? '😂' : '😮' }] : []
         };

@@ -3,7 +3,8 @@ import { findClips, transcribeVideo } from '../lib/api';
 import { projectEvents } from '../lib/audio';
 import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
 import { chatSpikes, parseChat } from '../lib/chat';
-import { analyseClip } from '../lib/faces';
+import { analyseClip, detectFacecam } from '../lib/faces';
+import { applyFx } from '../lib/presets';
 import { cancelTranscription, cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
 import type { Aspect, Brand, Clip, Project, StyleSettings } from '../lib/types';
@@ -186,8 +187,24 @@ export default function Studio() {
 
     /** reframe each clip around the speaker and grab thumbnails */
     async function finish(project: Project, found: Clip[], url: string) {
-        const clips = [...found];
-        let p: Project = { ...project, clips, status: 'clipping' };
+        let p: Project = { ...project, status: 'clipping' };
+        // a layout with a facecam needs to know where the facecam is
+        const facecamLayouts = ['split', 'pip'];
+        if (facecamLayouts.includes(p.style.layout) && !p.style.facecam) {
+            setStep(p.id, 'Looking for the facecam', 0.66);
+            const fc = await detectFacecam(url, p.duration).catch(() => null);
+            // no facecam found: fall back to following the speaker instead of a wrong crop
+            p = { ...p, style: fc ? { ...p.style, facecam: fc } : { ...p.style, layout: 'auto' } };
+        }
+        const tag = (p.options.topic ?? '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+        const events = projectEvents(p);
+        const words = p.transcript?.words ?? [];
+        const clips = found.map((c) => {
+            let n = tag && !c.hashtags.some((h) => h.replace('#', '').toLowerCase() === tag) ? { ...c, hashtags: [tag, ...c.hashtags] } : c;
+            if (p.options.fx) n = applyFx(n, p.options.fx, events, words);
+            return n;
+        });
+        p = { ...p, clips };
         update(p);
         for (let i = 0; i < clips.length; i++) {
             setStep(p.id, `Reframing clip ${i + 1} of ${clips.length}`, 0.7 + (0.3 * i) / clips.length);
@@ -225,7 +242,20 @@ export default function Studio() {
         }
     }
 
-    async function createProject(input: NewProjectInput) {
+    // videos are processed one after another so a batch doesn't overload the PC
+    const queue = useRef<Promise<void>>(Promise.resolve());
+    async function createProjects(inputs: NewProjectInput[]) {
+        const made: { project: Project; file: File; url: string }[] = [];
+        for (const input of inputs) made.push(await makeProject(input));
+        if (made.length === 1) setView({ name: 'project', id: made[0].project.id });
+        else setView({ name: 'home' });
+        for (const m of made) {
+            setStep(m.project.id, 'Waiting in line (starts when the video before it is done)', 0);
+            queue.current = queue.current.then(() => run(projectsRef.current.find((x) => x.id === m.project.id) ?? m.project, m.file, m.url, true)).catch(() => {});
+        }
+    }
+
+    async function makeProject(input: NewProjectInput): Promise<{ project: Project; file: File; url: string }> {
         const url = URL.createObjectURL(input.file);
         const meta = await readMeta(url);
         const project: Project = {
@@ -243,17 +273,18 @@ export default function Studio() {
                 ...DEFAULT_STYLE,
                 template: input.template,
                 highlight: input.highlight,
+                // a template's look (a saved preset keeps its own caption style and facecam box)
+                ...(input.preset?.style ?? {}),
                 aspect: input.keepShape ? closestAspect(meta.width, meta.height) : input.aspect,
                 // captions only in the video's own shape: show the whole frame, nothing cropped
                 ...(input.keepShape ? { layout: 'fit' as const } : {})
             },
-            options: input.options,
+            options: { ...input.options, fx: input.preset?.fx },
             chat: input.chatFile ? { name: input.chatFile.name, spikes: chatSpikes(parseChat(await input.chatFile.text())) } : undefined
         };
         setVideos((v) => ({ ...v, [project.id]: { file: input.file, url } }));
         update(project);
-        setView({ name: 'project', id: project.id });
-        run(project, input.file, url, true);
+        return { project, file: input.file, url };
     }
 
     async function attachVideo(id: string, file: File) {
@@ -339,7 +370,7 @@ export default function Studio() {
 
                 <main className={view.name === 'editor' ? 'w-full grow' : 'mx-auto w-full max-w-7xl grow px-4 py-6 sm:px-8'}>
                     {view.name === 'home' && (
-                        <Home projects={projects} running={progress} onCreate={createProject} onOpen={(id) => setView({ name: 'project', id })} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} onRestore={(ps) => ps.forEach((p) => update({ ...p, status: p.status === 'transcribing' || p.status === 'clipping' ? 'error' : p.status }))} accessCode={accessCode} setAccessCode={setAccessCode} />
+                        <Home projects={projects} running={progress} onCreate={createProjects} onOpen={(id) => setView({ name: 'project', id })} onOpenClip={(id, clipId) => setView({ name: 'editor', id, clipId })} onRestore={(ps) => ps.forEach((p) => update({ ...p, status: p.status === 'transcribing' || p.status === 'clipping' ? 'error' : p.status }))} accessCode={accessCode} setAccessCode={setAccessCode} />
                     )}
                     {view.name === 'brand' && <BrandKit brand={brand} setBrand={setBrand} />}
                     {view.name === 'project' && current && (

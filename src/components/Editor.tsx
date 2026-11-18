@@ -14,6 +14,7 @@ import { titleIdeas } from '../lib/titles';
 import { fixPrompt, parseFixes, replacePhrase } from '../lib/fixwords';
 import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, SfxKind, StyleSettings, Word } from '../lib/types';
 import { renderClip } from '../lib/video';
+import { applyFx, currentFx, loadPresets, savePresets, type Preset } from '../lib/presets';
 import { Segmented } from './Home';
 import { safeName, saveBlob } from './ProjectView';
 import type { LoadedVideo } from './Studio';
@@ -1261,49 +1262,6 @@ function MusicPanel({ project, onChange }: { project: Project; onChange: (p: Pro
     );
 }
 
-type Preset = { name: string; style: StyleSettings; fx: { hookTitle: boolean; freeze: string | null; sfx: boolean; shakes: boolean; replay: boolean; zoomLaughs: boolean; silences: boolean } };
-const PRESET_KEY = 'clipsmith.presets';
-function loadPresets(): Preset[] {
-    try {
-        return JSON.parse(localStorage.getItem(PRESET_KEY) ?? '[]');
-    } catch {
-        return [];
-    }
-}
-function savePresets(p: Preset[]) {
-    try {
-        localStorage.setItem(PRESET_KEY, JSON.stringify(p));
-    } catch {}
-}
-
-/** Effects of the current clip, as switches that can be applied to other clips. */
-function currentFx(clip: Clip): Preset['fx'] {
-    return {
-        hookTitle: !!clip.hookTitle && clip.hookTitle.seconds > 0,
-        freeze: clip.freeze && clip.freeze.seconds > 0 ? clip.freeze.text : null,
-        sfx: (clip.sfx?.length ?? 0) > 0,
-        shakes: (clip.shakes?.length ?? 0) > 0,
-        replay: !!clip.replay,
-        zoomLaughs: (clip.zooms?.length ?? 0) > 0,
-        silences: segmentsOf(clip).length > 1
-    };
-}
-
-function applyFx(c: Clip, fx: Preset['fx'], events: ReturnType<typeof autoSfx> extends unknown ? Parameters<typeof autoSfx>[1] : never, words: Word[]): Clip {
-    let n: Clip = { ...c };
-    n.hookTitle = fx.hookTitle ? { text: c.hookTitle?.text || c.title, seconds: c.hookTitle?.seconds || 3 } : c.hookTitle ? { ...c.hookTitle, seconds: 0 } : undefined;
-    n.freeze = fx.freeze !== null ? { seconds: c.freeze?.seconds || 1.5, text: c.freeze?.text || fx.freeze } : undefined;
-    if (fx.zoomLaughs && !(c.zooms?.length)) {
-        const laughs = events.filter((e) => (e.type === 'reaction' || e.type === 'chat') && e.start > c.start + 1 && e.start < c.end);
-        n.zooms = laughs.map((e) => ({ start: Math.max(c.start, e.start - 1.2), end: Math.min(c.end, e.start + 0.8), scale: 1.3 }));
-    }
-    if (fx.silences && segmentsOf(c).length <= 1) n = { ...n, ...withSegs(c, removeRanges(segmentsOf(c), silenceCuts(c, words))) };
-    n.sfx = fx.sfx ? (c.sfx?.length ? c.sfx : autoSfx(n, events)) : [];
-    n.shakes = fx.shakes ? (c.shakes?.length ? c.shakes : autoShakes(n, events)) : [];
-    n.replay = fx.replay ? c.replay ?? autoReplay(n, events) : undefined;
-    return n;
-}
-
 function PresetsPanel({ project, clip, events, words, onChange }: { project: Project; clip: Clip; events: Parameters<typeof autoSfx>[1]; words: Word[]; onChange: (p: Project) => void }) {
     const [presets, setPresets] = useState<Preset[]>(() => loadPresets());
     const [name, setName] = useState('');
@@ -1349,7 +1307,7 @@ function PresetsPanel({ project, clip, events, words, onChange }: { project: Pro
                     <button
                         className="tl-btn"
                         onClick={() => {
-                            onChange({ ...project, style: { ...p.style, facecam: project.style.facecam ?? p.style.facecam }, clips: project.clips.map((c) => applyFx(c, p.fx, events, words)) });
+                            onChange({ ...project, style: { ...project.style, ...p.style, facecam: project.style.facecam ?? p.style.facecam }, clips: project.clips.map((c) => applyFx(c, p.fx, events, words)) });
                             flash(`Applied “${p.name}” to all clips.`);
                         }}
                     >
