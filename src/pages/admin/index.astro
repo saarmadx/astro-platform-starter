@@ -1,0 +1,66 @@
+---
+import { getSecret } from 'astro:env/server';
+import Base from '../../layouts/Base.astro';
+import Logo from '../../components/Logo.astro';
+import '../../styles/admin.css';
+
+const isAdmin = Astro.locals.isAdmin;
+const configured = Boolean(getSecret('ADMIN_PASSWORD'));
+const error = Astro.url.searchParams.get('error');
+---
+
+<Base title="Admin · Leonida 100%" noindex footer={false}>
+    <header class="adm-header">
+        <div class="adm-wrap adm-header-inner">
+            <div class="adm-brand"><Logo href="/admin" size={20} /><span class="pill pill-warm">Admin</span></div>
+            {
+                isAdmin && (
+                    <div class="adm-header-actions">
+                        <span class="adm-dirty" id="dirty" hidden>Unsaved changes</span>
+                        <button class="btn btn-sm btn-primary" id="save" type="button" disabled>Save &amp; publish</button>
+                        <form method="post" action="/admin/logout">
+                            <button class="btn btn-sm btn-ghost" type="submit">Log out</button>
+                        </form>
+                    </div>
+                )
+            }
+        </div>
+    </header>
+
+    {
+        !isAdmin ? (
+            <main class="adm-login">
+                <form class="card" method="post" action="/admin/login">
+                    <h1>Admin login</h1>
+                    {!configured && <p class="adm-err">Set the ADMIN_PASSWORD and SESSION_SECRET environment variables to enable admin.</p>}
+                    {error === 'password' && <p class="adm-err">Wrong password.</p>}
+                    {error === 'config' && <p class="adm-err">Admin isn't configured. Set ADMIN_PASSWORD and SESSION_SECRET.</p>}
+                    <label class="lbl" for="password">Password</label>
+                    <input class="field" id="password" name="password" type="password" autocomplete="current-password" required autofocus />
+                    <button class="btn btn-primary" type="submit">Log in</button>
+                </form>
+            </main>
+        ) : (
+            <main class="adm-wrap adm-main">
+                <div class="adm-banner" id="banner">Loading content…</div>
+                <p class="adm-msg" id="msg" role="status" />
+
+                <nav class="adm-tabs" role="tablist">
+                    <button type="button" data-section="checklist" class="active">Checklist</button>
+                    <button type="button" data-section="money">Money methods</button>
+                    <button type="button" data-section="guides">Guide pages</button>
+                    <button type="button" data-section="regions">Regions</button>
+                    <button type="button" data-section="data">Backup &amp; files</button>
+                </nav>
+
+                <div id="editor" />
+            </main>
+        )
+    }
+
+    {isAdmin && (
+        <script>
+            import '../../scripts/admin.ts';
+        </script>
+    )}
+</Base>

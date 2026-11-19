@@ -1,0 +1,21 @@
+[
+    {
+        "id": "explore",
+        "name": "Explore Leonida",
+        "blurb": "Set foot in every region of the state.",
+        "items": [
+            { "id": "visit-vice-city", "name": "Visit Vice City", "region": "vice-city", "tip": "Tick this off once you've reached the region in-game." },
+            { "id": "visit-leonida-keys", "name": "Visit Leonida Keys", "region": "leonida-keys", "tip": "Tick this off once you've reached the region in-game." },
+            { "id": "visit-grassrivers", "name": "Visit Grassrivers", "region": "grassrivers", "tip": "Tick this off once you've reached the region in-game." },
+            { "id": "visit-port-gellhorn", "name": "Visit Port Gellhorn", "region": "port-gellhorn", "tip": "Tick this off once you've reached the region in-game." },
+            { "id": "visit-ambrosia", "name": "Visit Ambrosia", "region": "ambrosia", "tip": "Tick this off once you've reached the region in-game." },
+            { "id": "visit-mount-kalaga", "name": "Visit Mount Kalaga National Park", "region": "mount-kalaga", "tip": "Tick this off once you've reached the region in-game." }
+        ]
+    },
+    { "id": "story", "name": "Story Missions", "blurb": "The main storyline, mission by mission.", "items": [] },
+    { "id": "side", "name": "Side Missions & Strangers", "blurb": "Optional missions and encounters.", "items": [] },
+    { "id": "collectibles", "name": "Collectibles", "blurb": "Hidden items scattered across the map.", "items": [] },
+    { "id": "activities", "name": "Activities & Hobbies", "blurb": "Pastimes, minigames and hobbies.", "items": [] },
+    { "id": "properties", "name": "Properties & Businesses", "blurb": "Places you can buy and run.", "items": [] },
+    { "id": "vehicles", "name": "Rare Vehicles", "blurb": "Hard-to-find rides worth tracking down.", "items": [] }
+]

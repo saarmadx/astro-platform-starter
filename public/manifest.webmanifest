@@ -1,0 +1,10 @@
+{
+    "name": "Leonida 100%",
+    "short_name": "Leonida 100%",
+    "description": "Unofficial completion tracker and companion.",
+    "start_url": "/app",
+    "display": "standalone",
+    "background_color": "#0a0710",
+    "theme_color": "#0a0710",
+    "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

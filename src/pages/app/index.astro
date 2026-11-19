@@ -1,0 +1,171 @@
+---
+import Base from '../../layouts/Base.astro';
+import Logo from '../../components/Logo.astro';
+import { getContent } from '../../lib/content';
+import '../../styles/app.css';
+
+const user = Astro.locals.user!;
+const { content } = await getContent();
+const boot = { user, content };
+
+const tabs = [
+    { id: 'progress', label: 'Progress', icon: 'M12 3a9 9 0 1 0 9 9M12 3v9h9' },
+    { id: 'checklist', label: 'Checklist', icon: 'M9 11l3 3L21 5M3 12v7a2 2 0 0 0 2 2h14' },
+    { id: 'money', label: 'Money', icon: 'M12 2v20M17 6.5C17 4.6 14.8 3.5 12 3.5S7 4.6 7 6.5s2.2 3 5 3.5 5 1.6 5 3.5-2.2 3-5 3-5-1.1-5-3' },
+    { id: 'guide', label: 'Guide', icon: 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5v14zM20 17v4H6.5' },
+    { id: 'settings', label: 'Settings', icon: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z' }
+];
+---
+
+<Base title="Leonida 100%" noindex>
+    <header class="app-header">
+        <div class="wrap app-header-inner">
+            <Logo href="/app" size={22} />
+            <span class="sync" id="sync" data-state="idle"><i></i><span>Ready</span></span>
+        </div>
+    </header>
+
+    <nav class="tabbar" aria-label="Sections">
+        <div class="tabbar-inner" role="tablist">
+            {tabs.map((t) => (
+                <a href={`#${t.id}`} class="tab" role="tab" data-tab={t.id} aria-controls={`panel-${t.id}`}>
+                    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={t.icon}></path></svg>
+                    <span>{t.label}</span>
+                </a>
+            ))}
+        </div>
+    </nav>
+
+    <main class="wrap app-main">
+        <!-- PROGRESS -->
+        <section class="panel" id="panel-progress" role="tabpanel" data-panel="progress">
+            <div class="ring-card card">
+                <div class="ring">
+                    <svg viewBox="0 0 200 200" aria-hidden="true">
+                        <defs>
+                            <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+                                <stop offset="0" stop-color="#ff3d8b"></stop>
+                                <stop offset="1" stop-color="#ff9a3d"></stop>
+                            </linearGradient>
+                        </defs>
+                        <circle class="ring-track" cx="100" cy="100" r="86"></circle>
+                        <circle class="ring-arc" id="ring-arc" cx="100" cy="100" r="86" stroke="url(#ringGrad)"></circle>
+                    </svg>
+                    <div class="ring-label">
+                        <span class="ring-pct display" id="ring-pct">0%</span>
+                        <span class="ring-sub">complete</span>
+                    </div>
+                </div>
+                <p class="ring-count" id="ring-count">0 of 0 done</p>
+                <p class="ring-hello">Welcome back, <strong>{user.name}</strong></p>
+            </div>
+            <h2 class="section-title">By category</h2>
+            <div class="cat-bars" id="cat-bars"></div>
+        </section>
+
+        <!-- CHECKLIST -->
+        <section class="panel" id="panel-checklist" role="tabpanel" data-panel="checklist" hidden>
+            <div class="toolbar">
+                <div class="search">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+                    <label class="sr-only" for="q">Search checklist</label>
+                    <input class="field" id="q" type="search" placeholder="Search items, tips, notes" autocomplete="off" />
+                </div>
+                <div class="toolbar-row">
+                    <label class="sr-only" for="region">Region</label>
+                    <select class="field" id="region">
+                        <option value="">All regions</option>
+                        {content.regions.map((r) => <option value={r.id}>{r.name}</option>)}
+                    </select>
+                    <label class="switch">
+                        <input type="checkbox" id="hide-done" />
+                        <span class="switch-ui" aria-hidden="true"></span>
+                        <span>Hide done</span>
+                    </label>
+                </div>
+                <div class="chips" id="cat-chips" role="group" aria-label="Jump to category"></div>
+            </div>
+            <div id="checklist-list"></div>
+        </section>
+
+        <!-- MONEY -->
+        <section class="panel" id="panel-money" role="tabpanel" data-panel="money" hidden>
+            <h1 class="page-title">Money <span class="grad-text">methods</span></h1>
+            <p class="page-sub">Ways to stack cash, with payout, time and step-by-step instructions.</p>
+            <div class="money-grid" id="money-list"></div>
+        </section>
+
+        <!-- GUIDE -->
+        <section class="panel" id="panel-guide" role="tabpanel" data-panel="guide" hidden>
+            <h1 class="page-title">Guide</h1>
+            <p class="page-sub">How the app works, plus what's new in each update.</p>
+            <div class="guide-list">
+                {content.guides.map((g) => (
+                    <a class="card guide-card" href={`/app/guide/${g.slug}`}>
+                        <div>
+                            <h3>{g.title}</h3>
+                            {g.summary && <p>{g.summary}</p>}
+                        </div>
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m9 6 6 6-6 6"></path></svg>
+                    </a>
+                ))}
+                {content.guides.length === 0 && <p class="coming">Coming soon – being mapped, added in an update.</p>}
+            </div>
+        </section>
+
+        <!-- SETTINGS -->
+        <section class="panel" id="panel-settings" role="tabpanel" data-panel="settings" hidden>
+            <h1 class="page-title">Settings</h1>
+
+            <div class="card settings-block">
+                <h3>Account</h3>
+                <p class="muted">Signed in with Whop as <strong>{user.name}</strong>. Your progress syncs to this account.</p>
+                <form method="post" action="/auth/logout" id="logout-form">
+                    <button class="btn btn-sm" type="submit">Sign out</button>
+                </form>
+            </div>
+
+            <div class="card settings-block">
+                <h3>Back up progress</h3>
+                <p class="muted">Copy this code and keep it somewhere safe. Paste it below any time to restore.</p>
+                <textarea class="field mono" id="backup-out" rows="3" readonly aria-label="Backup code"></textarea>
+                <div class="row">
+                    <button class="btn btn-sm btn-primary" type="button" id="backup-copy">Copy code</button>
+                </div>
+            </div>
+
+            <div class="card settings-block">
+                <h3>Restore from code</h3>
+                <p class="muted">Restoring replaces your current progress and notes.</p>
+                <label class="sr-only" for="restore-in">Backup code to restore</label>
+                <textarea class="field mono" id="restore-in" rows="3" placeholder="Paste a backup code (starts with L100-)"></textarea>
+                <div class="row">
+                    <button class="btn btn-sm" type="button" id="restore-btn">Restore</button>
+                </div>
+                <p class="form-msg" id="restore-msg" role="status"></p>
+            </div>
+
+            <div class="card settings-block danger-zone">
+                <h3>Reset progress</h3>
+                <p class="muted">Clears every tick and note on all your devices. This can't be undone, so copy a backup first.</p>
+                <div id="reset-step1" class="row">
+                    <button class="btn btn-sm btn-danger" type="button" id="reset-start">Reset all progress…</button>
+                </div>
+                <div id="reset-step2" class="confirm" hidden>
+                    <p><strong>Are you sure?</strong> <span id="reset-summary"></span></p>
+                    <div class="row">
+                        <button class="btn btn-sm btn-danger" type="button" id="reset-confirm">Yes, reset everything</button>
+                        <button class="btn btn-sm" type="button" id="reset-cancel">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script type="application/json" id="boot" set:html={JSON.stringify(boot).replace(/</g, '\\u003c')} />
+    <script>
+        import '../../scripts/app.ts';
+    </script>
+</Base>

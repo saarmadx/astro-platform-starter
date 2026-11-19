@@ -1,0 +1,37 @@
+---
+import '@fontsource/anton/400.css';
+import '@fontsource-variable/inter/wght.css';
+import '../styles/global.css';
+import Footer from '../components/Footer.astro';
+
+interface Props {
+    title: string;
+    description?: string;
+    footer?: boolean;
+    noindex?: boolean;
+}
+const { title, description = 'Track everything you have done in Leonida and see your completion %. Unofficial fan-made companion.', footer = true, noindex = false } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <title>{title}</title>
+        <meta name="description" content={description} />
+        <meta name="theme-color" content="#0a0710" />
+        {noindex && <meta name="robots" content="noindex" />}
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <slot name="head" />
+    </head>
+    <body>
+        <slot />
+        {footer && <Footer />}
+    </body>
+</html>

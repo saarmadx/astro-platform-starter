@@ -1,21 +1,359 @@
 ---
-import Layout from '../layouts/Layout.astro';
-import ContextAlert from '../components/ContextAlert.astro';
-import Markdown from '../components/Markdown.astro';
+import Base from '../layouts/Base.astro';
+import Logo from '../components/Logo.astro';
+import { whopConfig } from '../lib/whop';
+import { getContent } from '../lib/content';
 
-const explainer = `
-An Astro website can go way beyond static pages - on the right platform.
+if (Astro.locals.user) return Astro.redirect('/app');
 
-Netlify supports not only [Streaming SSR](https://docs.astro.build/en/guides/server-side-rendering/#html-streaming) and fast [Edge Middleware](https://docs.astro.build/en/guides/middleware/), but also [on-demand revalidation](https://www.netlify.com/blog/cache-tags-and-purge-api-on-netlify/) and [stale-while-revalidate](https://www.netlify.com/blog/swr-and-fine-grained-cache-control/). 
-Any page or data can be rebuilt only when needed, without site visitors ever getting a performance hit.
-`;
+const { storeUrl } = whopConfig();
+const { content } = await getContent();
+
+const messages: Record<string, string> = {
+    'no-access': "Your Whop account doesn't have an active membership yet. Grab access below, then sign in again.",
+    'login-failed': "Sign-in didn't complete. Please try again.",
+    cancelled: 'Sign-in was cancelled.',
+    'not-configured': "Sign-in isn't set up yet. The site owner needs to add the Whop keys."
+};
+const status = Astro.url.searchParams.get('status');
+const message = status ? messages[status] : undefined;
+
+const features = [
+    { t: 'Track everything', d: 'Tick off regions, missions, collectibles, activities, properties and rare vehicles as you play.' },
+    { t: 'See your %', d: 'A big completion ring plus a progress bar for every category, updated the instant you tick.' },
+    { t: 'Filter fast', d: 'Search, filter by region and hide what you have done, so only what is left stays on screen.' },
+    { t: 'Personal notes', d: 'Leave yourself a note on any item: where you left off, what you need, what to come back for.' },
+    { t: 'Syncs everywhere', d: 'Progress saves to your account and follows you between phone, tablet and PC.' },
+    { t: 'Works offline', d: 'No signal on the couch? The checklist keeps working and syncs when you are back online.' }
+];
 ---
 
-<Layout title="Welcome to Astro.">
-    <ContextAlert class="mb-8" />
-    <h1 class="mb-10">Netlify Platform Starter for Astro</h1>
-    <Markdown content={explainer} class="mb-10 text-lg" />
-    <p>
-        <a href="https://docs.netlify.com/frameworks/astro/" class="btn btn-lg sm:min-w-64">Read the Docs</a>
-    </p>
-</Layout>
+<Base title="Leonida 100% — Unofficial completion tracker">
+    <header class="wrap top">
+        <Logo />
+        <a class="btn btn-sm btn-ghost" href="/auth/login">Sign in</a>
+    </header>
+
+    <main>
+        {message && (
+            <div class="wrap">
+                <p class="notice" role="status">{message}</p>
+            </div>
+        )}
+
+        <section class="wrap hero">
+            <div class="hero-copy">
+                <span class="pill pill-warm">Unofficial companion app</span>
+                <h1>
+                    Hit <span class="grad-text">100%</span><br />in Leonida
+                </h1>
+                <p class="lede">The second-screen tracker you keep open while you play. Tick everything off, see exactly what is left and watch your completion climb.</p>
+                <div class="cta">
+                    <a class="btn btn-primary btn-lg" href={storeUrl} rel="noopener">Get access</a>
+                    <a class="btn btn-lg" href="/auth/login">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+                        Sign in with Whop
+                    </a>
+                </div>
+                <p class="fine">Members only. Already bought access? Sign in with the Whop account you used.</p>
+            </div>
+
+            <div class="mock" aria-hidden="true">
+                <div class="mock-ring">
+                    <svg viewBox="0 0 120 120">
+                        <defs>
+                            <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff3d8b"></stop><stop offset="1" stop-color="#ff9a3d"></stop></linearGradient>
+                        </defs>
+                        <circle cx="60" cy="60" r="50" stroke="rgba(255,255,255,.08)" stroke-width="10" fill="none"></circle>
+                        <circle class="mock-arc" cx="60" cy="60" r="50" stroke="url(#lg)" stroke-width="10" fill="none" stroke-linecap="round" stroke-dasharray="314" stroke-dashoffset="100" transform="rotate(-90 60 60)"></circle>
+                    </svg>
+                    <div class="mock-pct"><span class="display">68%</span><small>complete</small></div>
+                </div>
+                <ul class="mock-list">
+                    {content.regions.slice(0, 4).map((r, i) => (
+                        <li class={i < 3 ? 'on' : ''}>
+                            <span class="mock-box"></span>
+                            <span>Visit {r.name}</span>
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        </section>
+
+        <div class="strip" aria-hidden="true">
+            <div class="strip-track">
+                {[0, 1].map(() => content.regions.map((r) => <span>{r.name}<i>✦</i></span>))}
+            </div>
+        </div>
+
+        <section class="wrap features">
+            {features.map((f) => (
+                <div class="card feature">
+                    <h3>{f.t}</h3>
+                    <p>{f.d}</p>
+                </div>
+            ))}
+        </section>
+
+        <section class="wrap faq">
+            <h2>Good to know</h2>
+            <details class="card">
+                <summary>Is this an official app?</summary>
+                <p>No. Leonida 100% is an unofficial, fan-made tool. It isn't affiliated with, endorsed by or sponsored by Rockstar Games or Take-Two Interactive.</p>
+            </details>
+            <details class="card">
+                <summary>Why do some categories say "Coming soon"?</summary>
+                <p>We only add items once they've been properly mapped and checked, never guesses. New lists arrive in updates, and your progress is always kept.</p>
+            </details>
+            <details class="card">
+                <summary>How do I get in?</summary>
+                <p>Buy access on our Whop page, then tap <strong>Sign in with Whop</strong> using the same account.</p>
+            </details>
+            <div class="cta center">
+                <a class="btn btn-primary btn-lg" href={storeUrl} rel="noopener">Get access</a>
+            </div>
+        </section>
+    </main>
+</Base>
+
+<style>
+    .top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-top: calc(16px + env(safe-area-inset-top));
+        padding-bottom: 8px;
+    }
+    .notice {
+        margin: 12px 0 0;
+        padding: 12px 16px;
+        border-radius: var(--radius-sm);
+        background: var(--grad-soft);
+        border: 1px solid rgba(255, 154, 61, 0.35);
+        font-size: 15px;
+    }
+    .hero {
+        display: grid;
+        gap: 40px;
+        padding-top: 40px;
+        padding-bottom: 48px;
+        align-items: center;
+    }
+    .hero h1 {
+        font-size: clamp(56px, 16vw, 104px);
+        margin: 16px 0 16px;
+    }
+    .lede {
+        color: var(--muted);
+        font-size: 18px;
+        max-width: 34ch;
+    }
+    .cta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin: 24px 0 12px;
+    }
+    .cta.center {
+        justify-content: center;
+        margin-top: 28px;
+    }
+    .cta .btn {
+        flex: 1 1 220px;
+    }
+    .cta.center .btn {
+        flex: 0 1 280px;
+    }
+    .fine {
+        color: var(--faint);
+        font-size: 13px;
+    }
+
+    .mock {
+        position: relative;
+        padding: 24px;
+        border-radius: 28px;
+        background: linear-gradient(180deg, var(--surface-2), var(--surface));
+        border: 1px solid var(--line);
+        box-shadow:
+            0 40px 80px -40px rgba(255, 61, 139, 0.45),
+            inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        max-width: 380px;
+        width: 100%;
+        justify-self: center;
+    }
+    .mock-ring {
+        position: relative;
+        width: 180px;
+        margin: 0 auto 20px;
+    }
+    .mock-arc {
+        animation: draw 1.6s var(--ease) both;
+    }
+    @keyframes draw {
+        from {
+            stroke-dashoffset: 314;
+        }
+    }
+    .mock-pct {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        text-align: center;
+    }
+    .mock-pct .display {
+        font-size: 44px;
+    }
+    .mock-pct small {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+    }
+    .mock-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 8px;
+    }
+    .mock-list li {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: var(--bg-2);
+        border: 1px solid var(--line);
+        font-weight: 600;
+        font-size: 15px;
+    }
+    .mock-list li.on span:last-child {
+        color: var(--muted);
+        text-decoration: line-through;
+    }
+    .mock-box {
+        width: 22px;
+        height: 22px;
+        border-radius: 7px;
+        border: 2px solid var(--line-strong);
+        flex: none;
+    }
+    .mock-list li.on .mock-box {
+        border: 0;
+        background:
+            url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M6 12.5l4 4 8-9' fill='none' stroke='%2306281f' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")
+                center/16px no-repeat,
+            var(--teal);
+    }
+
+    .strip {
+        overflow: hidden;
+        border-block: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.02);
+        padding: 14px 0;
+    }
+    .strip-track {
+        display: flex;
+        width: max-content;
+        animation: marquee 40s linear infinite;
+    }
+    .strip span {
+        font-family: var(--font-display);
+        text-transform: uppercase;
+        font-size: 22px;
+        color: var(--muted);
+        white-space: nowrap;
+        padding: 0 18px;
+    }
+    .strip i {
+        font-style: normal;
+        color: var(--pink);
+        padding-left: 36px;
+        font-size: 14px;
+        vertical-align: middle;
+    }
+    @keyframes marquee {
+        to {
+            transform: translateX(-50%);
+        }
+    }
+
+    .features {
+        display: grid;
+        gap: 12px;
+        padding-top: 48px;
+        padding-bottom: 24px;
+    }
+    .feature h3 {
+        font-size: 22px;
+        margin-bottom: 8px;
+    }
+    .feature p {
+        color: var(--muted);
+        margin: 0;
+        font-size: 15px;
+    }
+    .feature:nth-child(3n + 1) h3 {
+        color: var(--pink);
+    }
+    .feature:nth-child(3n + 2) h3 {
+        color: var(--orange);
+    }
+    .feature:nth-child(3n) h3 {
+        color: var(--teal);
+    }
+
+    .faq {
+        padding-top: 32px;
+        padding-bottom: 24px;
+        display: grid;
+        gap: 10px;
+    }
+    .faq h2 {
+        font-size: 36px;
+        margin-bottom: 8px;
+    }
+    .faq summary {
+        cursor: pointer;
+        font-weight: 700;
+        list-style: none;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+    }
+    .faq summary::after {
+        content: '+';
+        color: var(--teal);
+        font-size: 22px;
+        line-height: 1;
+        transition: transform 0.2s;
+    }
+    .faq details[open] summary::after {
+        transform: rotate(45deg);
+    }
+    .faq details p {
+        color: var(--muted);
+        margin: 12px 0 0;
+    }
+
+    @media (min-width: 640px) {
+        .features {
+            grid-template-columns: repeat(2, 1fr);
+        }
+    }
+    @media (min-width: 880px) {
+        .hero {
+            grid-template-columns: 1.15fr 1fr;
+            padding-top: 72px;
+            padding-bottom: 80px;
+        }
+        .features {
+            grid-template-columns: repeat(3, 1fr);
+        }
+        .cta .btn {
+            flex: 0 1 auto;
+        }
+    }
+</style>

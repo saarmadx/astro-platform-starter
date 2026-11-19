@@ -1,0 +1,16 @@
+[
+    {
+        "slug": "how-to-use",
+        "title": "How to use Leonida 100%",
+        "summary": "Get set up in two minutes and start ticking things off.",
+        "updated": "2026-11-19",
+        "body": "Leonida 100% is your second-screen tracker. Keep it open on your phone while you play and tick things off as you go.\n\n## Progress\n\nThe **Progress** tab shows your overall completion and a bar for every category. It updates the moment you tick something.\n\n## Checklist\n\n- Tap a checkbox to mark an item done. Tap again to undo.\n- Use **search** to find an item by name or tip.\n- Pick a **region** to see only what's in that part of the map.\n- Turn on **Hide done** to keep your list short.\n- Tap **Note** on any item to write a reminder for yourself. Notes are private to your account.\n\nCategories marked *Coming soon* are still being mapped. They fill in automatically when we publish an update, and your existing progress is kept.\n\n## Money Methods\n\nEach card shows the payout, how long it takes, how hard it is, what you need to unlock it, and step-by-step instructions.\n\n## Sync and offline\n\nYour progress is saved to your account and syncs across your devices. It's also stored on the device, so the checklist keeps working with no signal. Changes sync when you're back online.\n\n## Backups\n\nIn **Settings** you can copy a backup code and paste it back later to restore your progress. Keep it somewhere safe before resetting.\n"
+    },
+    {
+        "slug": "update-log",
+        "title": "Update log",
+        "summary": "What's new in each update.",
+        "updated": "2026-11-19",
+        "body": "## 1.0 — Launch\n\n- Progress ring and per-category progress bars\n- Checklist with search, region filter, *Hide done* and personal notes\n- Explore Leonida: all six regions\n- Money Methods and Guide sections\n- Cloud sync across devices, offline support and backup codes\n\nMore categories are being mapped and will arrive in upcoming updates.\n"
+    }
+]
