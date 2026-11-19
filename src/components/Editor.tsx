@@ -555,6 +555,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                 <Toggle label="Highlight keywords" hint={clip.keywords.length ? clip.keywords.join(', ') : 'No keywords for this clip'} checked={style.keywordHighlight} onChange={(v) => setStyle({ keywordHighlight: v })} />
                                 <Toggle label="Auto emoji" hint={clip.emojis.length ? clip.emojis.map((e) => `${e.emoji} ${e.word}`).join('  ') : 'No emoji for this clip'} checked={style.emojis} onChange={(v) => setStyle({ emojis: v })} />
                                 <Toggle label="Animated emoji" hint="Emoji pop in and float" checked={!!style.emojiAnim} onChange={(v) => setStyle({ emojiAnim: v })} />
+                                <CaptionSync project={project} onChange={commit} />
                                 <FixWords project={project} onChange={onChange} />
                                 <TranslatePanel clip={clip} groups={groups} style={style} setStyle={setStyle} setClip={setClip} />
                                 <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
@@ -1578,6 +1579,40 @@ function PipSettingsPanel({ style, setStyle }: { style: StyleSettings; setStyle:
             <Field label={`Size: ${Math.round(pp.size * 100)}% of the width`}>
                 <input type="range" min={0.2} max={0.55} step={0.01} value={pp.size} onChange={(e) => set({ size: +e.target.value })} className="w-full accent-[var(--color-accent)]" />
             </Field>
+        </div>
+    );
+}
+
+/** Moves every caption earlier or later (the whole project), for videos where they don't line up. */
+function CaptionSync({ project, onChange }: { project: Project; onChange: (p: Project) => void }) {
+    const shift = project.captionShift ?? 0;
+    const move = (d: number) => {
+        const t = project.transcript;
+        if (!t) return;
+        const mv = <T extends { start: number; end: number }>(x: T): T => ({ ...x, start: Math.max(0, x.start + d), end: Math.max(0.05, x.end + d) });
+        onChange({
+            ...project,
+            captionShift: Math.round((shift + d) * 100) / 100,
+            transcript: { ...t, words: t.words.map(mv), segments: t.segments.map(mv) },
+            clips: project.clips.map((c) => (c.translation ? { ...c, translation: { ...c.translation, lines: c.translation.lines.map(mv) } } : c))
+        });
+    };
+    return (
+        <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
+            <div className="flex items-center justify-between gap-2">
+                <span>
+                    <span className="block text-sm font-semibold">Caption timing</span>
+                    <span className="block text-xs text-muted">Captions too early or too late? Nudge them all, then press play to check.</span>
+                </span>
+                <span className="font-mono text-xs text-white/60">{shift === 0 ? 'in sync' : `${shift > 0 ? '+' : ''}${shift.toFixed(1)}s`}</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+                <button className="tl-btn" onClick={() => move(-0.5)} title="All captions half a second earlier">⏪ 0.5s earlier</button>
+                <button className="tl-btn" onClick={() => move(-0.1)} title="All captions a tenth of a second earlier">◀ 0.1s</button>
+                <button className="tl-btn" onClick={() => move(0.1)} title="All captions a tenth of a second later">0.1s ▶</button>
+                <button className="tl-btn" onClick={() => move(0.5)} title="All captions half a second later">0.5s later ⏩</button>
+                {shift !== 0 && <button className="text-xs text-muted hover:text-white" onClick={() => move(-shift)}>Reset</button>}
+            </div>
         </div>
     );
 }

@@ -23,6 +23,7 @@ type Props = {
     onOpenClip: (clipId: string) => void;
     onAttach: (f: File) => void;
     onRegenerate: (options: Project['options']) => void;
+    onRecaption: () => void;
     onDelete: () => void;
     onChange: (p: Project) => void;
     onPaste: (answer: string) => Promise<void>;
@@ -39,7 +40,7 @@ export function saveBlob(blob: Blob, name: string) {
 
 export const safeName = (t: string) => t.replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'clip';
 
-export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onDelete, onChange, onPaste, onSwitchCaptions }: Props) {
+export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onRecaption, onDelete, onChange, onPaste, onSwitchCaptions }: Props) {
     const [sort, setSort] = useState<'score' | 'time'>('score');
     const [batch, setBatch] = useState<{ i: number; n: number; ratio: number } | null>(null);
     const [batchError, setBatchError] = useState('');
@@ -134,6 +135,16 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     </select>
                     <button className="btn-ghost" disabled={busy || !video} onClick={() => onRegenerate(project.options)}>
                         Find new clips
+                    </button>
+                    <button
+                        className="btn-ghost"
+                        disabled={busy || !video || !project.transcript || project.status !== 'ready'}
+                        title="Makes the captions again with the improved timing and the Accurate setting. Your clips and edits stay."
+                        onClick={() => {
+                            if (window.confirm('Redo the captions for this whole video with the improved timing?\n\nYour clips and edits stay. It takes about as long as the video, and words you fixed by hand will need fixing again.')) onRecaption();
+                        }}
+                    >
+                        🔁 Redo captions
                     </button>
                     <button className="btn-ghost" disabled={!video || clips.length === 0} onClick={() => setReel(true)}>
                         ▶ Watch all

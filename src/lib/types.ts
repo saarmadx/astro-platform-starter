@@ -165,4 +165,6 @@ export type Project = {
     chat?: { name: string; spikes: { t: number; count: number; laughs: number }[] };
     /** captions finished so far, so a stopped run can continue where it left off */
     partial?: { key: string; words: Word[]; db: number[] | null; nextChunk: number };
+    /** how far all captions were moved by hand (seconds; negative = earlier) */
+    captionShift?: number;
 };

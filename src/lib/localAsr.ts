@@ -100,6 +100,7 @@ export function transcribeChunk(
                 usingGpu = !!m.gpu;
                 return;
             }
+            if (m.type === 'progress') return; // a piece of this chunk finished (keeps the watchdog quiet)
             if (m.type === 'download') {
                 downloads[m.file] = { loaded: m.loaded, total: m.total };
                 const all = Object.values(downloads);

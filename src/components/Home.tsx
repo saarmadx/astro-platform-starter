@@ -90,7 +90,8 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
             setGpu(!!a);
             setF16(half);
             // "Best" is a big download, so it is never the default; "Accurate" is a good balance
-            setAsrQuality(a ? 'accurate' : 'fast');
+            // "Accurate" gives by far the best words and timing, so it's the default everywhere
+            setAsrQuality('accurate');
         });
     }, []);
 
@@ -305,13 +306,13 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                         items={[
                                             { id: 'fastest', label: 'Fastest' },
                                             { id: 'fast', label: 'Balanced' },
-                                            { id: 'accurate', label: 'Accurate' },
+                                            { id: 'accurate', label: 'Accurate (recommended)' },
                                             ...(gpu && f16 ? [{ id: 'best', label: 'Best (big download)' }] : [])
                                         ]}
                                     />
                                 )}
                                 {gpu === true && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">✓ Your computer can use its graphics card, so captions will be fast. “Accurate” is selected (about 250 MB, downloaded once).{f16 ? ' “Best” is a little more accurate but a ~1.4 GB download.' : ''}</p>}
-                                {gpu === false && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Your browser can’t use the graphics card here, so free captions run on the processor. “Balanced” is selected; choose Accurate for better captions if you can wait longer, or Fastest for long videos. Up-to-date Chrome or Edge can help.</p>}
+                                {gpu === false && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Your browser can’t use the graphics card here, so free captions run on the processor. “Accurate” is selected because it gives the best words and timing; it takes about as long as the video. Balanced or Fastest are quicker but less precise. Up-to-date Chrome or Edge can help.</p>}
                                 <p className="text-xs text-muted">Free captions run on your computer. The first time, the speech model downloads once (about 40 MB for Fastest, 250 MB for Accurate, ~1.4 GB for Best). You can fix any misheard words afterwards in the editor.</p>
                             </div>
                         </details>

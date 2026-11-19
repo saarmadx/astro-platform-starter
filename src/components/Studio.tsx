@@ -356,6 +356,31 @@ export default function Studio() {
         run(next, vid.file, vid.url, !p.transcript);
     }
 
+    /** new captions for an existing project (fixed timing, Accurate model); clips and edits stay */
+    async function recaption(id: string) {
+        const p = projectsRef.current.find((x) => x.id === id);
+        const vid = videos[id];
+        if (!p || !vid) return;
+        setErrors((e) => ({ ...e, [id]: '' }));
+        setStep(id, 'Redoing captions', 0.02);
+        try {
+            const engine = { asr: p.options.asr ?? 'local', language: p.options.language ?? 'english', quality: (p.options.asr ?? 'local') === 'local' ? ('accurate' as const) : p.options.asrQuality ?? 'fast' };
+            const transcript = await transcribeVideo(vid.file, p.duration, accessCode, (label, r) => setStep(id, label, r), engine);
+            if (transcript.words.length === 0) throw new Error('No speech was found. Check that the video language is set correctly.');
+            const cur = projectsRef.current.find((x) => x.id === id) ?? p;
+            update({ ...cur, transcript, captionShift: 0, partial: undefined, options: { ...cur.options, asrQuality: engine.quality } });
+        } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            setErrors((er) => ({ ...er, [id]: `Redoing captions failed: ${msg}` }));
+        } finally {
+            setProgress((pr) => {
+                const n = { ...pr };
+                delete n[id];
+                return n;
+            });
+        }
+    }
+
     async function removeProject(id: string) {
         await deleteProject(id);
         setProjects((ps) => ps.filter((p) => p.id !== id));
@@ -422,6 +447,7 @@ export default function Studio() {
                             onDelete={() => removeProject(current.id)}
                             onPaste={(answer) => pasteClips(current.id, answer)}
                             onSwitchCaptions={() => switchCaptions(current.id)}
+                            onRecaption={() => recaption(current.id)}
                             onChange={update}
                         />
                     )}
