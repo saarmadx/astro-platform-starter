@@ -5,6 +5,9 @@ const ROOTS = ['fuck', 'shit', 'bitch', 'cunt', 'dick', 'cock', 'pussy', 'asshol
 const EXACT = new Set(['ass', 'arse', 'hell', 'crap', 'bullshit', 'tits']);
 
 export function isSwear(text: string): boolean {
+    // the speech model often writes swears already starred out: "f***", "f**k", "s**t", "*****"
+    const starred = text.toLowerCase().replace(/[^a-z*]/g, '');
+    if (/\*/.test(starred) && /^[a-z]{0,2}\*{2,}[a-z]{0,4}$/.test(starred)) return true;
     const w = text.toLowerCase().replace(/[^a-z]/g, '');
     if (!w) return false;
     if (EXACT.has(w)) return true;

@@ -108,8 +108,9 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     const musicUrl = useMemo(() => (project.music ? URL.createObjectURL(project.music.blob) : ''), [project.music?.blob]);
     useEffect(() => () => { if (musicUrl) URL.revokeObjectURL(musicUrl); }, [musicUrl]);
     const musicRef = useRef<HTMLAudioElement>(null);
-    const sceneRef = useRef({ clip, style, brand, groups, music: project.music, words });
-    sceneRef.current = { clip, style, brand, groups, music: project.music, words };
+    const sceneRef = useRef({ clip, style, brand, groups, music: project.music, words, bleeps });
+    sceneRef.current = { clip, style, brand, groups, music: project.music, words, bleeps };
+    const beepRef = useRef<{ ctx: AudioContext; osc: OscillatorNode; gain: GainNode } | null>(null);
     useEffect(() => {
         let raf = 0;
         const loop = () => {
@@ -159,6 +160,27 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                     }
                 }
                 lastTimeRef.current = v.currentTime;
+                // bleep in the preview too: mute the swear and play a beep, like the export
+                const bleeping = !v.paused && !replayRef.current && s.bleeps.some((b) => v.currentTime >= b.start && v.currentTime < b.end);
+                if (bleeping !== v.muted) v.muted = bleeping;
+                try {
+                    if (bleeping && !beepRef.current) {
+                        const ctx = new AudioContext();
+                        const osc = ctx.createOscillator();
+                        const gain = ctx.createGain();
+                        osc.frequency.value = 1000;
+                        gain.gain.value = 0.25;
+                        osc.connect(gain).connect(ctx.destination);
+                        osc.start();
+                        beepRef.current = { ctx, osc, gain };
+                    } else if (!bleeping && beepRef.current) {
+                        beepRef.current.osc.stop();
+                        beepRef.current.ctx.close();
+                        beepRef.current = null;
+                    }
+                } catch {
+                    /* no audio device: the export still bleeps */
+                }
                 // background music follows the video, quieter while someone talks
                 const m = musicRef.current;
                 if (m && s.music) {
@@ -550,6 +572,13 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                     </Field>
                                     <Field label="Swear words">
                                         <Segmented value={style.censor ?? 'off'} onChange={(v) => setStyle({ censor: v as StyleSettings['censor'] })} items={[{ id: 'off', label: 'Show' }, { id: 'captions', label: 'f***' }, { id: 'bleep', label: 'f*** + bleep' }]} />
+                                        {style.censor === 'bleep' && (
+                                            <p className="mt-1 text-xs text-muted">
+                                                {bleeps.length
+                                                    ? `${bleeps.length} bleep${bleeps.length > 1 ? 's' : ''} in this clip (red marks on the Audio track). You hear them in the preview and the export.`
+                                                    : 'No swear words in this clip’s captions. If one was misheard, click that caption on the timeline and type the real word: it gets bleeped automatically.'}
+                                            </p>
+                                        )}
                                     </Field>
                                 </div>
                                 <Toggle label="Highlight keywords" hint={clip.keywords.length ? clip.keywords.join(', ') : 'No keywords for this clip'} checked={style.keywordHighlight} onChange={(v) => setStyle({ keywordHighlight: v })} />
