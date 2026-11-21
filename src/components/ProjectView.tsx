@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { projectEvents } from '../lib/audio';
+import { loadExportPrefs } from '../lib/exportPrefs';
+import type { Quality } from '../lib/video';
 import { chatPrompt, splitForChat } from '../lib/prompts';
 import { displayWords, groupWords } from '../lib/captions';
 import { drawScene } from '../lib/draw';
@@ -65,7 +67,8 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     words: project.transcript.words,
                     style: project.style,
                     brand,
-                    quality: 720,
+                    quality: loadExportPrefs().quality,
+                    fps: loadExportPrefs().fps,
                     videoWidth: project.width,
                     videoHeight: project.height,
                     speakers: project.speakers,
@@ -182,7 +185,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
                         />
                     </label>
                     <button className="btn-accent !py-2 text-sm" disabled={busy || !video || !!batch || clips.length === 0} onClick={exportAll}>
-                        {batch ? `Exporting ${batch.i + 1}/${batch.n} · ${Math.round(batch.ratio * 100)}%` : 'Export all'}
+                        {batch ? `Exporting ${batch.i + 1}/${batch.n} · ${Math.round(batch.ratio * 100)}%` : `Export all (${loadExportPrefs().quality}p)`}
                     </button>
                 </div>
             </div>
@@ -436,7 +439,7 @@ function ReelPreview({ project, clips, video, brand, onClose, onOpen }: { projec
 function CompilationMaker({ project, clips, video, brand, onClose }: { project: Project; clips: Project['clips']; video: LoadedVideo; brand: Brand; onClose: () => void }) {
     const [chosen, setChosen] = useState<string[]>(() => clips.slice(0, Math.min(5, clips.length)).map((c) => c.id));
     const [countdown, setCountdown] = useState(true);
-    const [quality, setQuality] = useState<720 | 1080>(720);
+    const [quality, setQuality] = useState<Quality>(1080);
     const [busy, setBusy] = useState<string | null>(null);
     const [err, setErr] = useState('');
     const picked = clips.filter((c) => chosen.includes(c.id));
@@ -519,7 +522,7 @@ function CompilationMaker({ project, clips, video, brand, onClose }: { project: 
                     Countdown with numbered title cards (#{picked.length} … #1, best clip last)
                 </label>
                 <div className="flex gap-2 text-sm">
-                    {([720, 1080] as const).map((q) => (
+                    {([720, 1080, 1440] as const).map((q) => (
                         <button key={q} className={`rounded-lg px-3 py-1.5 ${quality === q ? 'bg-accent text-ink' : 'bg-white/[0.06]'}`} onClick={() => setQuality(q)}>{q}p</button>
                     ))}
                 </div>

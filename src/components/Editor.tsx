@@ -14,6 +14,7 @@ import { titleIdeas } from '../lib/titles';
 import { fixPrompt, parseFixes, replacePhrase } from '../lib/fixwords';
 import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, SfxKind, StyleSettings, Word } from '../lib/types';
 import { renderClip } from '../lib/video';
+import { DEFAULT_EXPORT, loadExportPrefs, saveExportPrefs, type ExportPrefs } from '../lib/exportPrefs';
 import { applyFx, currentFx, loadPresets, savePresets, type Preset } from '../lib/presets';
 import { Segmented } from './Home';
 import { safeName, saveBlob } from './ProjectView';
@@ -54,7 +55,13 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     const [time, setTime] = useState(clip?.start ?? 0);
     const [playing, setPlaying] = useState(false);
     const [selection, setSelection] = useState<Selection>(null);
-    const [quality, setQuality] = useState<720 | 1080>(720);
+    const [exportPrefs, setExportPrefsState] = useState<ExportPrefs>(DEFAULT_EXPORT);
+    useEffect(() => setExportPrefsState(loadExportPrefs()), []);
+    const setExportPrefs = (p: ExportPrefs) => {
+        setExportPrefsState(p);
+        saveExportPrefs(p);
+    };
+    const quality = exportPrefs.quality;
     const [rendering, setRendering] = useState<number | null>(null);
     const [renderError, setRenderError] = useState('');
     const [busy, setBusy] = useState('');
@@ -431,7 +438,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         setRenderError('');
         setRendering(0);
         try {
-            const blob = await renderClip({ file: video.file, clip, words, style, brand, quality, videoWidth: project.width, videoHeight: project.height, speakers: project.speakers, music: project.music, onProgress: setRendering });
+            const blob = await renderClip({ file: video.file, clip, words, style, brand, quality, fps: exportPrefs.fps, videoWidth: project.width, videoHeight: project.height, speakers: project.speakers, music: project.music, onProgress: setRendering });
             saveBlob(blob, `${safeName(clip.title)}.mp4`);
         } catch (e) {
             setRenderError((e as Error).message);
@@ -900,7 +907,17 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                     {clip.end - clip.start - outLen > 0.05 ? ` (${(clip.end - clip.start - outLen).toFixed(1)}s cut out)` : ''}
                                 </p>
                                 <Field label="Quality">
-                                    <Segmented value={String(quality)} onChange={(v) => setQuality(+v as 720 | 1080)} items={[{ id: '720', label: '720p · faster' }, { id: '1080', label: '1080p · sharper' }]} />
+                                    <Segmented
+                                        value={String(quality)}
+                                        onChange={(v) => setExportPrefs({ ...exportPrefs, quality: +v as ExportPrefs['quality'] })}
+                                        items={[{ id: '720', label: '720p · fastest' }, { id: '1080', label: '1080p · TikTok' }, { id: '1440', label: '1440p · best for YouTube' }]}
+                                    />
+                                    <label className="mt-2 flex items-start gap-2 text-xs text-muted">
+                                        <input type="checkbox" className="mt-0.5 accent-[var(--color-accent)]" checked={exportPrefs.fps === 60} onChange={(e) => setExportPrefs({ ...exportPrefs, fps: e.target.checked ? 60 : 30 })} />
+                                        <span>
+                                            <b className="text-white">Smooth 60 fps</b> for 60 fps recordings (gameplay looks smoother; takes about twice as long)
+                                        </span>
+                                    </label>
                                 </Field>
                                 {renderError && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{renderError}</p>}
                                 <button className="btn-accent" disabled={!video || rendering !== null} onClick={exportClip}>
@@ -913,7 +930,17 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                     Download transcript (.txt)
                                 </button>
                                 {project.options.captionsOnly && <p className="text-xs text-muted">The .srt file can be uploaded to YouTube as subtitles, so viewers can switch them on and off. The MP4 has the captions burned in.</p>}
-                                <p className="text-xs text-muted">Rendering runs on your device. 720p takes about a minute per clip; effects and 1080p take longer.</p>
+                                <details className="rounded-xl bg-white/[0.04] p-3 text-xs text-muted">
+                                    <summary className="cursor-pointer font-semibold text-white">Upload tips for the best quality</summary>
+                                    <ul className="mt-2 list-disc space-y-1 pl-4">
+                                        <li>The video is made in high quality on purpose (big file): TikTok and YouTube always compress uploads again, and more detail survives that.</li>
+                                        <li><b className="text-white">YouTube Shorts:</b> export at <b className="text-white">1440p</b>. YouTube gives higher-resolution uploads better compression, so they look sharper even on phones.</li>
+                                        <li><b className="text-white">TikTok:</b> export at <b className="text-white">1080p</b>. In the TikTok app, turn on high-quality uploads (Settings → Data saver / Upload quality, depending on version), or upload from a computer.</li>
+                                        <li>Upload the exported file directly. Sending it through WhatsApp, Instagram DMs or Telegram first shrinks it.</li>
+                                        <li>Choose 60 fps only if your recording is 60 fps.</li>
+                                    </ul>
+                                </details>
+                                <p className="text-xs text-muted">Rendering runs on your device and uses several processor cores. Long or very high-resolution recordings take longer; the bar shows real progress.</p>
                             </>
                         )}
                     </div>

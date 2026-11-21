@@ -223,7 +223,7 @@ export function pipBox(style: StyleSettings, W: number, H: number) {
     };
 }
 
-function pipPath(ctx: CanvasRenderingContext2D, b: { x: number; y: number; s: number; shape: 'circle' | 'rounded' }) {
+export function pipPath(ctx: CanvasRenderingContext2D, b: { x: number; y: number; s: number; shape: 'circle' | 'rounded' }) {
     if (b.shape === 'circle') {
         ctx.beginPath();
         ctx.arc(b.x + b.s / 2, b.y + b.s / 2, b.s / 2, 0, Math.PI * 2);
@@ -601,4 +601,30 @@ export async function watermarkPng(wm: Watermark, W: number): Promise<Uint8Array
     paintWatermark(c.getContext('2d')!, wm, W, b.pad, b.pad);
     const blob: Blob = await new Promise((r) => c.toBlob((x) => r(x!), 'image/png'));
     return new Uint8Array(await blob.arrayBuffer());
+}
+
+/** Black/white shape of the facecam bubble and its white rim, as PNGs for the export. */
+export async function pipMaskPngs(style: StyleSettings, W: number, H: number): Promise<{ mask: Uint8Array; rim: Uint8Array }> {
+    const b = pipBox(style, W, H);
+    const png = async (paint: (ctx: CanvasRenderingContext2D) => void) => {
+        const c = document.createElement('canvas');
+        c.width = c.height = b.s;
+        paint(c.getContext('2d')!);
+        const blob: Blob = await new Promise((r) => c.toBlob((x) => r(x!), 'image/png'));
+        return new Uint8Array(await blob.arrayBuffer());
+    };
+    const mask = await png((ctx) => {
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, b.s, b.s);
+        ctx.fillStyle = '#fff';
+        pipPath(ctx, { x: 0, y: 0, s: b.s, shape: b.shape });
+        ctx.fill();
+    });
+    const rim = await png((ctx) => {
+        ctx.lineWidth = b.border;
+        ctx.strokeStyle = '#fff';
+        pipPath(ctx, { x: b.border / 2, y: b.border / 2, s: b.s - b.border, shape: b.shape });
+        ctx.stroke();
+    });
+    return { mask, rim };
 }
