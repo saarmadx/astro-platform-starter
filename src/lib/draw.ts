@@ -420,6 +420,15 @@ function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
 
         const lh = size * 1.2;
         let y = cy - ((lines.length - 1) * lh) / 2;
+        // settle: the whole caption appears a little bigger and shrinks to normal (eases out)
+        const age = t - times[gi].start;
+        const settle = tpl.settle && age < 0.15 ? 1 + (tpl.settle - 1) * (1 - age / 0.15) * (1 - age / 0.15) : 1;
+        ctx.save();
+        if (settle !== 1) {
+            ctx.translate(W / 2, cy);
+            ctx.scale(settle, settle);
+            ctx.translate(-W / 2, -cy);
+        }
         for (const ln of lines) {
             let x = (W - ln.width) / 2;
             if (tpl.lineBox) {
@@ -477,6 +486,7 @@ function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
             }
             y += lh;
         }
+        ctx.restore();
     }
 
     if (s.style.emojis) {

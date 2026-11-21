@@ -31,6 +31,8 @@ export type CaptionTemplate = {
     fillSpoken?: boolean;
     /** text colour on top of the active box */
     boxText?: string;
+    /** each new caption appears this much bigger and settles to normal size (e.g. 1.05 = 105% -> 100%) */
+    settle?: number;
     defaultHighlight: string;
 };
 
@@ -49,6 +51,7 @@ export const TEMPLATES: CaptionTemplate[] = [
     { id: 'fire', name: 'Fire', font: 'Anton', cssFont: 'CapAnton', size: 0.1, uppercase: true, color: '#ffffff', outline: 0.1, outlineColor: '#7a0000', shadow: true, active: 'color', pop: true, activeScale: 1.2, lineBox: false, glow: '#ff5a00', defaultHighlight: '#ffb000' },
     { id: 'reveal', name: 'Reveal', font: 'Poppins ExtraBold', cssFont: 'CapPoppins', size: 0.078, uppercase: false, color: '#ffffff', outline: 0.12, shadow: true, active: 'color', pop: true, lineBox: false, reveal: true, defaultHighlight: '#c8ff3d' },
     { id: 'bounce', name: 'Bounce', font: 'Rubik Black', cssFont: 'CapRubik', size: 0.082, uppercase: true, color: '#ffffff', outline: 0.15, shadow: true, active: 'color', pop: true, activeScale: 1.35, lineBox: false, defaultHighlight: '#ffe600' },
+    { id: 'settle', name: 'Settle', font: 'Montserrat ExtraBold', cssFont: 'CapMontserrat', size: 0.08, uppercase: true, color: '#ffffff', outline: 0.14, shadow: true, active: 'color', pop: false, lineBox: false, settle: 1.05, defaultHighlight: '#ffe600' },
     { id: 'karaoke', name: 'Karaoke', font: 'Montserrat ExtraBold', cssFont: 'CapMontserrat', size: 0.075, uppercase: true, color: '#9aa0aa', outline: 0.12, shadow: false, active: 'color', pop: false, lineBox: false, fillSpoken: true, defaultHighlight: '#ffffff' },
     { id: 'subtitle', name: 'Subtitle', font: 'Poppins ExtraBold', cssFont: 'CapPoppins', size: 0.058, uppercase: false, color: '#ffffff', outline: 0, shadow: false, active: 'none', pop: false, lineBox: true, defaultHighlight: '#ffffff' },
     { id: 'minimal', name: 'Minimal', font: 'Montserrat ExtraBold', cssFont: 'CapMontserrat', size: 0.06, uppercase: false, color: '#ffffff', outline: 0.06, shadow: true, active: 'none', pop: false, lineBox: false, defaultHighlight: '#ffffff' },

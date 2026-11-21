@@ -194,6 +194,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                         if (active && t.pop) tags += `\\fscx${scaleUp}\\fscy${scaleUp}\\t(0,110,\\fscx100\\fscy100)`;
                         else if (active && t.activeScale) tags += `\\fscx${scaleUp}\\fscy${scaleUp}`;
                         else if (w.kw && !active) tags += `\\fscx108\\fscy108`;
+                        // settle: every word of a new caption starts bigger and shrinks to normal together
+                        if (t.settle && wi === 0) {
+                            const big = Math.round(t.settle * 100);
+                            tags = `\\fscx${big}\\fscy${big}\\t(0,150,\\fscx100\\fscy100)` + tags;
+                        }
                         return tags ? `{${tags}}${s}{\\r}` : s;
                     })
                     .join(' ');
