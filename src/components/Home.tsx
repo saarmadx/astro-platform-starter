@@ -77,6 +77,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     const [asr, setAsr] = useState<AsrEngine>('local');
     const [language, setLanguage] = useState('english');
     const [asrQuality, setAsrQuality] = useState<AsrQuality>('fast');
+    const [speedBoost, setSpeedBoost] = useState(false);
     const [gpu, setGpu] = useState<boolean | null>(null);
     const [f16, setF16] = useState(false);
     const [chatFile, setChatFile] = useState<File | null>(null);
@@ -136,7 +137,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                     highlight: tpl.defaultHighlight,
                     keepShape: captionsOnly && keepShape,
                     preset,
-                    options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality, captionsOnly }
+                    options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality, captionsOnly, speedBoost: speedBoost && asr === 'local' && !captionsOnly }
                 }))
             );
             // a batch stays on this page: get ready for the next one
@@ -310,6 +311,15 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                             ...(gpu && f16 ? [{ id: 'best', label: 'Best (big download)' }] : [])
                                         ]}
                                     />
+                                )}
+                                {asr === 'local' && !captionsOnly && (
+                                    <label className="flex items-start gap-2 rounded-lg bg-white/[0.04] px-3 py-2 text-xs">
+                                        <input type="checkbox" className="mt-0.5 accent-[var(--color-accent)]" checked={speedBoost} onChange={(e) => setSpeedBoost(e.target.checked)} />
+                                        <span>
+                                            <b className="text-white">⚡ Speed boost for long videos (optional)</b>
+                                            <span className="block text-muted">Quick captions to find the moments, then Accurate captions only for your clips. Much faster on long streams; the clips get the same caption quality.</span>
+                                        </span>
+                                    </label>
                                 )}
                                 {gpu === true && <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200">✓ Your computer can use its graphics card, so captions will be fast. “Accurate” is selected (about 250 MB, downloaded once).{f16 ? ' “Best” is a little more accurate but a ~1.4 GB download.' : ''}</p>}
                                 {gpu === false && <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100">Your browser can’t use the graphics card here, so free captions run on the processor. “Accurate” is selected because it gives the best words and timing; it takes about as long as the video. Balanced or Fastest are quicker but less precise. Up-to-date Chrome or Edge can help.</p>}

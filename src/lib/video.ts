@@ -108,6 +108,24 @@ export async function extractAudioChunks(
     return chunks;
 }
 
+/** Audio of chosen stretches only (e.g. the clips), as 16 kHz mono mp3 pieces. */
+export async function extractAudioRanges(file: File, ranges: { start: number; end: number }[], onProgress: (ratio: number) => void): Promise<{ offset: number; blob: Blob }[]> {
+    const { ff, input } = await mountOn(0, file);
+    const out: { offset: number; blob: Blob }[] = [];
+    for (let i = 0; i < ranges.length; i++) {
+        const r = ranges[i];
+        onProgress(i / ranges.length);
+        const path = `/range_${i}.mp3`;
+        const code = await ff.exec(['-ss', String(r.start), '-t', String(r.end - r.start), '-i', input, '-vn', '-ac', '1', '-ar', '16000', '-b:a', '32k', '-y', path]);
+        if (code !== 0) throw new Error('Could not read the audio track. Is this a valid video file?');
+        const data = await ff.readFile(path);
+        await ff.deleteFile(path);
+        out.push({ offset: r.start, blob: new Blob([data as Uint8Array], { type: 'audio/mpeg' }) });
+    }
+    onProgress(1);
+    return out;
+}
+
 // ---------- helpers ----------
 
 /** ffmpeg expression for a piecewise-linear crop path (pixels), in part time `t`. */

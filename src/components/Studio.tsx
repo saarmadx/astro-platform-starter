@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { findClips, transcribeVideo } from '../lib/api';
+import { clipRanges, findClips, recaptionRanges, transcribeVideo } from '../lib/api';
 import { projectEvents } from '../lib/audio';
 import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
 import { chatSpikes, parseChat } from '../lib/chat';
@@ -47,6 +47,9 @@ export default function Studio() {
     const [view, setView] = useState<View>({ name: 'home' });
     const [projects, setProjects] = useState<Project[]>([]);
     const [videos, setVideos] = useState<Record<string, LoadedVideo>>({});
+    // the latest videos, for steps that run long after they were started (e.g. after captions finish)
+    const videosRef = useRef(videos);
+    videosRef.current = videos;
     const [progress, setProgress] = useState<Record<string, { label: string; ratio: number }>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [brand, setBrandState] = useState<Brand>(DEFAULT_BRAND);
@@ -123,14 +126,17 @@ export default function Studio() {
                 p = { ...p, status: 'transcribing' };
                 save(p);
                 step('Loading video engine', 0.02);
-                const key = `${o.asr ?? 'local'}|${o.language ?? 'english'}|${o.asrQuality ?? 'fast'}`;
+                // speed boost (optional): a quick first pass is enough to find the moments
+                const boost = !!o.speedBoost && (o.asr ?? 'local') === 'local' && !o.captionsOnly;
+                const quality = boost ? (o.asrQuality === 'fastest' ? 'fastest' : 'fast') : o.asrQuality ?? 'fast';
+                const key = `${o.asr ?? 'local'}|${o.language ?? 'english'}|${quality}`;
                 const resume = p.partial && p.partial.key === key ? p.partial : undefined;
                 const transcript = await transcribeVideo(
                     file,
                     p.duration,
                     accessCode,
                     (label, r) => step(label, 0.05 + r * 0.45),
-                    { asr: o.asr ?? 'local', language: o.language ?? 'english', quality: o.asrQuality ?? 'fast' },
+                    { asr: o.asr ?? 'local', language: o.language ?? 'english', quality },
                     resume,
                     (state) => {
                         p = { ...p, partial: { key, ...state } };
@@ -221,6 +227,7 @@ export default function Studio() {
         p = { ...p, clips };
         update(p);
         await reframe(p, url);
+        if (p.options.speedBoost && (p.options.asr ?? 'local') === 'local' && !p.options.captionsOnly) await recaption(p.id, 'clips');
     }
 
     /** thumbnails, and the speaker-following crop when the layout uses it. Optional: never blocks the clips. */
@@ -357,18 +364,21 @@ export default function Studio() {
     }
 
     /** new captions for an existing project (fixed timing, Accurate model); clips and edits stay */
-    async function recaption(id: string) {
+    async function recaption(id: string, scope: 'clips' | 'all' = 'all') {
         const p = projectsRef.current.find((x) => x.id === id);
-        const vid = videos[id];
+        const vid = videosRef.current[id];
         if (!p || !vid) return;
         setErrors((e) => ({ ...e, [id]: '' }));
         setStep(id, 'Redoing captions', 0.02);
         try {
             const engine = { asr: p.options.asr ?? 'local', language: p.options.language ?? 'english', quality: (p.options.asr ?? 'local') === 'local' ? ('accurate' as const) : p.options.asrQuality ?? 'fast' };
-            const transcript = await transcribeVideo(vid.file, p.duration, accessCode, (label, r) => setStep(id, label, r), engine);
+            const transcript =
+                scope === 'clips' && p.transcript && p.clips.length
+                    ? await recaptionRanges(vid.file, p.transcript, clipRanges(p.clips, p.duration), engine.language, (label, r) => setStep(id, label, r))
+                    : await transcribeVideo(vid.file, p.duration, accessCode, (label, r) => setStep(id, label, r), engine);
             if (transcript.words.length === 0) throw new Error('No speech was found. Check that the video language is set correctly.');
             const cur = projectsRef.current.find((x) => x.id === id) ?? p;
-            update({ ...cur, transcript, captionShift: 0, partial: undefined, options: { ...cur.options, asrQuality: engine.quality } });
+            update({ ...cur, transcript, captionShift: 0, partial: undefined, options: scope === 'all' ? { ...cur.options, asrQuality: engine.quality } : cur.options });
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             setErrors((er) => ({ ...er, [id]: `Redoing captions failed: ${msg}` }));
@@ -447,7 +457,7 @@ export default function Studio() {
                             onDelete={() => removeProject(current.id)}
                             onPaste={(answer) => pasteClips(current.id, answer)}
                             onSwitchCaptions={() => switchCaptions(current.id)}
-                            onRecaption={() => recaption(current.id)}
+                            onRecaption={(scope) => recaption(current.id, scope)}
                             onChange={update}
                         />
                     )}

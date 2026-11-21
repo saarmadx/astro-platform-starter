@@ -23,7 +23,7 @@ type Props = {
     onOpenClip: (clipId: string) => void;
     onAttach: (f: File) => void;
     onRegenerate: (options: Project['options']) => void;
-    onRecaption: () => void;
+    onRecaption: (scope: 'clips' | 'all') => void;
     onDelete: () => void;
     onChange: (p: Project) => void;
     onPaste: (answer: string) => Promise<void>;
@@ -49,6 +49,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
     const [compile, setCompile] = useState(false);
     const [chatMsg, setChatMsg] = useState('');
     const busy = !!progress;
+    const [redoOpen, setRedoOpen] = useState(false);
 
     const clips = useMemo(() => [...project.clips].sort((a, b) => (sort === 'score' ? b.score - a.score : a.start - b.start)), [project.clips, sort]);
 
@@ -136,16 +137,29 @@ export default function ProjectView({ project, video, progress, error, brand, on
                     <button className="btn-ghost" disabled={busy || !video} onClick={() => onRegenerate(project.options)}>
                         Find new clips
                     </button>
-                    <button
-                        className="btn-ghost"
-                        disabled={busy || !video || !project.transcript || project.status !== 'ready'}
-                        title="Makes the captions again with the improved timing and the Accurate setting. Your clips and edits stay."
-                        onClick={() => {
-                            if (window.confirm('Redo the captions for this whole video with the improved timing?\n\nYour clips and edits stay. It takes about as long as the video, and words you fixed by hand will need fixing again.')) onRecaption();
-                        }}
-                    >
-                        🔁 Redo captions
-                    </button>
+                    <div className="relative">
+                        <button
+                            className="btn-ghost"
+                            disabled={busy || !video || !project.transcript || project.status !== 'ready'}
+                            title="Makes the captions again with the improved timing and the Accurate setting. Your clips and edits stay."
+                            onClick={() => setRedoOpen(!redoOpen)}
+                        >
+                            🔁 Redo captions
+                        </button>
+                        {redoOpen && (
+                            <div className="absolute top-full left-0 z-30 mt-1 flex w-72 flex-col gap-1 rounded-xl border border-white/10 bg-[#1b1e25] p-2 shadow-2xl">
+                                <button className="rounded-lg px-3 py-2 text-left hover:bg-white/10" disabled={clips.length === 0} onClick={() => { setRedoOpen(false); onRecaption('clips'); }}>
+                                    <span className="block text-sm font-bold">⚡ Just the clips (fast)</span>
+                                    <span className="block text-xs text-muted">Accurate captions for your clips only. Much faster on long videos.</span>
+                                </button>
+                                <button className="rounded-lg px-3 py-2 text-left hover:bg-white/10" onClick={() => { setRedoOpen(false); onRecaption('all'); }}>
+                                    <span className="block text-sm font-bold">Whole video</span>
+                                    <span className="block text-xs text-muted">Every minute again. Takes about as long as the video.</span>
+                                </button>
+                                <p className="px-3 pb-1 text-[11px] text-muted">Your clips and edits stay. Words you fixed by hand in those parts need fixing again.</p>
+                            </div>
+                        )}
+                    </div>
                     <button className="btn-ghost" disabled={!video || clips.length === 0} onClick={() => setReel(true)}>
                         ▶ Watch all
                     </button>

@@ -153,6 +153,8 @@ export type Project = {
         picker?: Picker;
         /** just caption the whole video, no clip finding */
         captionsOnly?: boolean;
+        /** optional: quick captions for the whole video, then Accurate captions only for the clips */
+        speedBoost?: boolean;
         /** effects applied to every clip once they are found (from a template) */
         fx?: import('./presets').PresetFx;
     };

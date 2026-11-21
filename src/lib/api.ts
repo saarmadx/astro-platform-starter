@@ -1,6 +1,6 @@
 import { ENERGY_STEP, findAudioEvents, loudness } from './audio';
 import { cleanWords, decode16k, NEEDS_F16, segmentsFromWords, STUCK, transcribeChunk, usingGpu } from './localAsr';
-import { extractAudioChunks } from './video';
+import { extractAudioChunks, extractAudioRanges } from './video';
 import type { AsrQuality, Clip, Project, Transcript, Word } from './types';
 
 export type LocalResume = { words: Word[]; db: number[] | null; nextChunk: number };
@@ -139,6 +139,54 @@ async function transcribeLocally(
     result.segments = segmentsFromWords(result.words);
     onStatus('Captions ready', 1);
     return result;
+}
+
+/** The stretches of video the clips use (plus room to trim or extend), merged and sorted. */
+export function clipRanges(clips: Clip[], duration: number, margin = 8): { start: number; end: number }[] {
+    const spans = clips
+        .map((c) => ({ start: Math.max(0, c.start - margin), end: Math.min(duration, c.end + margin) }))
+        .sort((a, b) => a.start - b.start);
+    const out: { start: number; end: number }[] = [];
+    for (const s of spans) {
+        const last = out[out.length - 1];
+        if (last && s.start <= last.end + 2) last.end = Math.max(last.end, s.end);
+        else out.push({ ...s });
+    }
+    return out;
+}
+
+/**
+ * Free Accurate captions for only some stretches (the clips), merged into the transcript:
+ * words inside those stretches are replaced, everything else is kept. Much faster than
+ * re-captioning a whole long video.
+ */
+export async function recaptionRanges(
+    file: File,
+    transcript: Transcript,
+    ranges: { start: number; end: number }[],
+    language: string,
+    onStatus: (label: string, ratio: number) => void,
+    isCancelled: () => boolean = () => false
+): Promise<Transcript> {
+    const pieces = await extractAudioRanges(file, ranges, (r) => onStatus('Extracting audio of the clips', r * 0.1));
+    const fresh: Word[] = [];
+    const total = ranges.reduce((a, r) => a + r.end - r.start, 0);
+    let done = 0;
+    for (let i = 0; i < pieces.length; i++) {
+        if (isCancelled()) throw new Error('cancelled');
+        const len = ranges[i].end - ranges[i].start;
+        onStatus(`Making accurate captions for the clips: ${Math.round((done / total) * 100)}%${usingGpu === true ? ' · using your graphics card' : usingGpu === false ? ' · using your processor' : ''}`, 0.1 + (0.9 * done) / total);
+        const audio = await decode16k(pieces[i].blob);
+        const words = await transcribeChunk(audio, pieces[i].offset, language, 'accurate', (loaded, tot) => {
+            if (tot > 0 && loaded < tot * 0.999) onStatus(`Downloading the Accurate speech model, first time only (${Math.round(loaded / 1048576)} of ${Math.round(tot / 1048576)} MB)`, 0.1);
+        });
+        fresh.push(...words.filter((w) => w.start >= ranges[i].start && w.start < ranges[i].end));
+        done += len;
+    }
+    const inside = (t: number) => ranges.some((r) => t >= r.start && t < r.end);
+    const words = cleanWords([...transcript.words.filter((w) => !inside(w.start)), ...fresh]);
+    onStatus('Captions ready', 1);
+    return { ...transcript, words, segments: segmentsFromWords(words) };
 }
 
 export async function findClips(
