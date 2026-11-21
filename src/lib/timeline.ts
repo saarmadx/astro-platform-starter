@@ -120,8 +120,8 @@ export function segAt(clip: Clip, t: number): Seg | undefined {
 /** Framing at source time t: a part can override the project's layout. */
 export function styleAt(clip: Clip, style: StyleSettings, t: number): StyleSettings {
     const s = segAt(clip, t);
-    if (!s || (!s.layout && s.cropX === undefined)) return style;
-    return { ...style, layout: (s.layout ?? style.layout) as Layout, cropX: s.cropX ?? style.cropX };
+    if (!s || (!s.layout && s.cropX === undefined && s.splitRatio === undefined)) return style;
+    return { ...style, layout: (s.layout ?? style.layout) as Layout, cropX: s.cropX ?? style.cropX, splitRatio: s.splitRatio ?? style.splitRatio };
 }
 
 /** Gaps between words longer than `minGap` (keeping a little breathing room), for jump cuts. */

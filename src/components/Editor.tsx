@@ -1550,6 +1550,25 @@ function PartInspector({ clip, style, selection, editClip, setClip }: { clip: Cl
                     />
                 </Field>
             )}
+            {effective === 'split' && (
+                <Field label={`Facecam height for this part: ${Math.round((first.splitRatio ?? style.splitRatio ?? 0.4) * 100)}%${first.splitRatio === undefined ? ' (same as the clip)' : ''}`}>
+                    <input
+                        type="range"
+                        min={0.25}
+                        max={0.55}
+                        step={0.01}
+                        value={first.splitRatio ?? style.splitRatio ?? 0.4}
+                        onPointerDown={() => update((s) => s)}
+                        onChange={(e) => update((s) => ({ ...s, splitRatio: +e.target.value }), false)}
+                        className="w-full accent-[var(--color-accent)]"
+                    />
+                    {sel.some((s) => s.splitRatio !== undefined) && (
+                        <button className="mt-1 text-xs text-muted hover:text-white" onClick={() => update((s) => ({ ...s, splitRatio: undefined }))}>
+                            Use the clip’s facecam height
+                        </button>
+                    )}
+                </Field>
+            )}
             {(effective === 'split' || effective === 'pip') && !style.facecam && <p className="text-xs text-amber-200">Set the facecam box below so this part knows where your face is.</p>}
             <p className="text-xs text-white/45">Tip: shift-click parts to select several. Right-click a part for the same options.</p>
         </div>

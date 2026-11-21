@@ -606,7 +606,7 @@ export async function renderClip(o: RenderOptions): Promise<Blob> {
     const runs: { start: number; end: number; key: string }[] = [];
     let acc = 0;
     for (const sg of segmentsOf(clip)) {
-        const key = `${sg.layout ?? style.layout}|${sg.cropX ?? style.cropX}`;
+        const key = `${sg.layout ?? style.layout}|${sg.cropX ?? style.cropX}|${sg.splitRatio ?? style.splitRatio}`;
         const len = sg.end - sg.start;
         const last = runs[runs.length - 1];
         if (last && last.key === key) last.end = acc + len;

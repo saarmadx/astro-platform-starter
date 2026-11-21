@@ -84,7 +84,7 @@ export type Sticker = {
 export type Span = { start: number; end: number };
 
 /** One part of a clip on the timeline. Each part can have its own framing. */
-export type Seg = { id: string; start: number; end: number; layout?: Layout; cropX?: number };
+export type Seg = { id: string; start: number; end: number; layout?: Layout; cropX?: number; /** facecam height for this part (split layout) */ splitRatio?: number };
 
 export type Aspect = '9:16' | '1:1' | '16:9';
 export type Layout = 'auto' | 'manual' | 'fit' | 'split' | 'pip';
