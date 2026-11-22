@@ -14,6 +14,7 @@ import { CalendarDays, Home as HomeIcon, Palette, Scissors } from 'lucide-react'
 import Planner from './Planner';
 import Home, { type NewProjectInput } from './Home';
 import ProjectView from './ProjectView';
+import { ExportQueuePanel } from './ui';
 
 export type View = { name: 'home' } | { name: 'brand' } | { name: 'planner' } | { name: 'project'; id: string } | { name: 'editor'; id: string; clipId: string };
 
@@ -404,7 +405,7 @@ export default function Studio() {
             <aside className={`sticky ${view.name === 'editor' ? '!hidden' : ''} top-0 hidden h-screen w-60 shrink-0 flex-col gap-1 border-r border-white/10 bg-surface/60 p-4 md:flex`}>
                 <a href="/" className="mb-6 flex items-center gap-2 px-2 text-lg font-extrabold no-underline">
                     <span className="grid size-8 place-items-center rounded-lg bg-accent text-ink"><Scissors size={16} strokeWidth={2.5} /></span>
-                    Clipsmith
+                    ClipHeist
                 </a>
                 <NavButton active={view.name === 'home'} onClick={() => setView({ name: 'home' })}>
                     <HomeIcon size={15} className="mr-2.5 opacity-70" />Home
@@ -429,7 +430,7 @@ export default function Studio() {
             <div className="flex min-w-0 grow flex-col">
                 <div className={`flex items-center justify-between border-b border-white/10 px-4 py-3 md:hidden ${view.name === 'editor' ? '!hidden' : ''}`}>
                     <a href="/" className="flex items-center gap-2 font-extrabold no-underline">
-                        <span className="grid size-7 place-items-center rounded-lg bg-accent text-ink">✂</span>Clipsmith
+                        <span className="grid size-7 place-items-center rounded-lg bg-accent text-ink">✂</span>ClipHeist
                     </a>
                     <div className="flex gap-1">
                         <button className="btn-ghost !px-3 !py-1.5" onClick={() => setView({ name: 'home' })}>Home</button>
@@ -477,6 +478,7 @@ export default function Studio() {
                     {(view.name === 'project' || view.name === 'editor') && !current && <p className="text-muted">This project no longer exists.</p>}
                 </main>
             </div>
+            <ExportQueuePanel />
         </div>
     );
 }

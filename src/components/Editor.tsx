@@ -14,6 +14,8 @@ import { titleIdeas } from '../lib/titles';
 import { fixPrompt, parseFixes, replacePhrase } from '../lib/fixwords';
 import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, SfxKind, StyleSettings, Word } from '../lib/types';
 import { renderClip } from '../lib/video';
+import { enqueueExport, useExportJobs } from '../lib/exportQueue';
+import { exportChecks } from '../lib/exportChecks';
 import { DEFAULT_EXPORT, loadExportPrefs, saveExportPrefs, type ExportPrefs } from '../lib/exportPrefs';
 import { applyFx, currentFx, loadPresets, savePresets, type Preset } from '../lib/presets';
 import { Segmented } from './Home';
@@ -62,8 +64,13 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         saveExportPrefs(p);
     };
     const quality = exportPrefs.quality;
-    const [rendering, setRendering] = useState<number | null>(null);
-    const [renderError, setRenderError] = useState('');
+    // exports go through the shared queue, so they keep going while you edit other clips
+    const allJobs = useExportJobs();
+    const myJob = [...allJobs].reverse().find((j) => j.projectId === project.id && j.clipId === clip?.id);
+    const myActive = myJob && (myJob.status === 'waiting' || myJob.status === 'rendering') ? myJob : undefined;
+    const rendering = myActive?.status === 'rendering' ? myActive.progress : null;
+    const ahead = myActive?.status === 'waiting' ? allJobs.filter((j) => j.status === 'rendering' || (j.status === 'waiting' && allJobs.indexOf(j) < allJobs.indexOf(myActive))).length : 0;
+    const renderError = myJob?.status === 'error' ? myJob.error ?? 'Export failed' : '';
     const [busy, setBusy] = useState('');
     const [copied, setCopied] = useState(false);
     const [thumbs, setThumbs] = useState<{ t: number; url: string }[]>([]);
@@ -433,18 +440,18 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         setTimeout(() => setBusy(''), 3000);
     }
 
-    async function exportClip() {
+    function exportClip() {
         if (!video) return;
-        setRenderError('');
-        setRendering(0);
-        try {
-            const blob = await renderClip({ file: video.file, clip, words, style, brand, quality, fps: exportPrefs.fps, videoWidth: project.width, videoHeight: project.height, speakers: project.speakers, music: project.music, onProgress: setRendering });
-            saveBlob(blob, `${safeName(clip.title)}.mp4`);
-        } catch (e) {
-            setRenderError((e as Error).message);
-        } finally {
-            setRendering(null);
-        }
+        // a snapshot of the clip as it is now: later edits don't change a queued export
+        const o = { file: video.file, clip, words, style, brand, quality, fps: exportPrefs.fps, videoWidth: project.width, videoHeight: project.height, speakers: project.speakers, music: project.music };
+        enqueueExport({
+            label: clip.title || 'Clip',
+            projectId: project.id,
+            clipId: clip.id,
+            filename: `${safeName(clip.title)}.mp4`,
+            save: saveBlob,
+            run: (onProgress) => renderClip({ ...o, onProgress })
+        });
     }
 
     const tags = clip.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
@@ -920,9 +927,11 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                     </label>
                                 </Field>
                                 {renderError && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{renderError}</p>}
-                                <button className="btn-accent" disabled={!video || rendering !== null} onClick={exportClip}>
-                                    {rendering !== null ? `Rendering… ${Math.round(rendering * 100)}%` : 'Export MP4'}
+                                <ExportChecks clip={clip} style={style} words={words} brand={brand} />
+                                <button className="btn-accent" disabled={!video || !!myActive} onClick={exportClip}>
+                                    {rendering !== null ? `Rendering… ${Math.round(rendering * 100)}%` : myActive ? `Waiting in queue (${ahead} ahead)…` : 'Export MP4'}
                                 </button>
+                                {myActive && <p className="text-xs text-muted">You can keep editing or open other clips while it renders. The file downloads when it’s done.</p>}
                                 <button className="btn-ghost" onClick={() => saveBlob(new Blob([buildSrt(words, clip, style, project.speakers)], { type: 'text/plain' }), `${safeName(clip.title)}.srt`)}>
                                     Download captions (.srt)
                                 </button>
@@ -1689,5 +1698,21 @@ function CaptionSync({ project, onChange }: { project: Project; onChange: (p: Pr
                 {shift !== 0 && <button className="text-xs text-muted hover:text-white" onClick={() => move(-shift)}>Reset</button>}
             </div>
         </div>
+    );
+}
+
+/** Things worth fixing before posting (only shown when something is found). */
+function ExportChecks({ clip, style, words, brand }: { clip: Clip; style: StyleSettings; words: Word[]; brand: Brand }) {
+    const checks = useMemo(() => exportChecks(clip, style, words, brand), [clip, style, words, brand]);
+    if (!checks.length) return <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-xs text-emerald-200" data-export-checks>✓ Ready to post: no problems found.</p>;
+    return (
+        <ul className="flex flex-col gap-1.5" data-export-checks>
+            {checks.map((c) => (
+                <li key={c.text} className={`rounded-lg px-3 py-2 text-xs ${c.level === 'warn' ? 'bg-amber-500/10 text-amber-100' : 'bg-white/[0.04] text-muted'}`}>
+                    {c.level === 'warn' ? '⚠ ' : '💡 '}
+                    {c.text}
+                </li>
+            ))}
+        </ul>
     );
 }

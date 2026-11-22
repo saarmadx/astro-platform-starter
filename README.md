@@ -1,4 +1,4 @@
-# Clipsmith
+# ClipHeist
 
 Turn long videos (podcasts, interviews, talks, streams) into short vertical clips with animated captions, ready for YouTube Shorts, TikTok and Reels.
 

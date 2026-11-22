@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { TEMPLATES } from '../lib/templates';
 import { LANGUAGES } from '../lib/localAsr';
 import type { Aspect, AsrEngine, AsrQuality, ContentMode, Picker, Project } from '../lib/types';
@@ -17,6 +17,21 @@ export type NewProjectInput = {
     /** a look applied to every clip */
     preset?: Preset;
 };
+
+const LONG_MINUTES = 40;
+/** Video length in minutes, read from the file's header (0 if the browser can't tell). */
+function videoMinutes(f: File): Promise<number> {
+    return new Promise((res) => {
+        const v = document.createElement('video');
+        const url = URL.createObjectURL(f);
+        const done = (m: number) => { URL.revokeObjectURL(url); v.removeAttribute('src'); res(m); };
+        const t = setTimeout(() => done(0), 8000);
+        v.preload = 'metadata';
+        v.onloadedmetadata = () => { clearTimeout(t); done(Number.isFinite(v.duration) ? v.duration / 60 : 0); };
+        v.onerror = () => { clearTimeout(t); done(0); };
+        v.src = url;
+    });
+}
 
 const LENGTHS = [
     { id: 'auto', label: 'Auto', min: 15, max: 90 },
@@ -78,6 +93,8 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     const [language, setLanguage] = useState('english');
     const [asrQuality, setAsrQuality] = useState<AsrQuality>('fast');
     const [speedBoost, setSpeedBoost] = useState(false);
+    const boostTouched = useRef(false);
+    const [longestMin, setLongestMin] = useState(0);
     const [gpu, setGpu] = useState<boolean | null>(null);
     const [f16, setF16] = useState(false);
     const [chatFile, setChatFile] = useState<File | null>(null);
@@ -107,6 +124,21 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     );
     const [error, setError] = useState('');
     const [busy, setBusy] = useState(false);
+
+    // how long the picked videos are, to protect long streams from running out of memory
+    useEffect(() => {
+        let alive = true;
+        setLongestMin(0);
+        Promise.all(files.map((f) => videoMinutes(f))).then((m) => alive && setLongestMin(Math.max(0, ...m)));
+        return () => { alive = false; };
+    }, [files]);
+    const longVideo = longestMin >= LONG_MINUTES;
+    const lowMemory = ((navigator as Navigator & { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
+    // a long stream with the heavy caption model is what makes Chrome run out of memory,
+    // so Speed boost switches on by itself (unless you turned it off yourself)
+    useEffect(() => {
+        if (longVideo && !boostTouched.current && asr === 'local' && !captionsOnly && (asrQuality === 'accurate' || asrQuality === 'best')) setSpeedBoost(true);
+    }, [longVideo, asr, captionsOnly, asrQuality]);
 
     function pick(list?: FileList | File[] | null) {
         const all = Array.from(list ?? []);
@@ -202,6 +234,23 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                             )}
                         </label>
                         {error && <p className="rounded-lg bg-red-500/15 px-3 py-2 text-sm text-red-200">{error}</p>}
+                        {longVideo && asr === 'local' && (
+                            <div className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-100" data-long-warning>
+                                <b className="text-amber-50">Long video ({Math.round(longestMin)} min).</b>{' '}
+                                {!captionsOnly && speedBoost
+                                    ? '⚡ Speed boost is on, so it uses much less memory and is faster. Your clips still get Accurate captions.'
+                                    : !captionsOnly && (asrQuality === 'accurate' || asrQuality === 'best')
+                                      ? 'Accurate captions on a long stream need a lot of memory and Chrome may close the tab.'
+                                      : 'This takes a while.'}{' '}
+                                Close other tabs and games while it works. If the tab closes, open the project, pick the same video and click Continue: it carries on where it stopped.
+                                {(lowMemory || longestMin >= 90) && ' For streams over 1.5 hours, splitting the recording into parts is safest.'}
+                                {!captionsOnly && !speedBoost && (asrQuality === 'accurate' || asrQuality === 'best') && (
+                                    <button className="mt-2 block rounded-lg bg-amber-400/20 px-2 py-1 font-semibold text-amber-50 hover:bg-amber-400/30" onClick={() => { boostTouched.current = true; setSpeedBoost(true); }}>
+                                        ⚡ Turn on Speed boost
+                                    </button>
+                                )}
+                            </div>
+                        )}
                         <button className="btn-accent" disabled={!file || busy} onClick={start}>
                             {busy ? 'Starting…' : files.length > 1 ? (captionsOnly ? `Add captions to ${files.length} videos` : `Get clips from ${files.length} videos`) : captionsOnly ? 'Add captions' : 'Get clips in 1 click'}
                         </button>
@@ -314,7 +363,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                 )}
                                 {asr === 'local' && !captionsOnly && (
                                     <label className="flex items-start gap-2 rounded-lg bg-white/[0.04] px-3 py-2 text-xs">
-                                        <input type="checkbox" className="mt-0.5 accent-[var(--color-accent)]" checked={speedBoost} onChange={(e) => setSpeedBoost(e.target.checked)} />
+                                        <input type="checkbox" className="mt-0.5 accent-[var(--color-accent)]" checked={speedBoost} onChange={(e) => { boostTouched.current = true; setSpeedBoost(e.target.checked); }} />
                                         <span>
                                             <b className="text-white">⚡ Speed boost for long videos (optional)</b>
                                             <span className="block text-muted">Quick captions to find the moments, then Accurate captions only for your clips. Much faster on long streams; the clips get the same caption quality.</span>
@@ -390,7 +439,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                         onRestore(data.projects as Project[]);
                                         setBackupMsg(`Restored ${data.projects.length} project${data.projects.length > 1 ? 's' : ''}. Select each video again when you open it.`);
                                     } catch {
-                                        setBackupMsg('That file is not a Clipsmith backup.');
+                                        setBackupMsg('That file is not a ClipHeist backup.');
                                     }
                                 }}
                             />

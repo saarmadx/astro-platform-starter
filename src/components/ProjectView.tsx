@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { projectEvents } from '../lib/audio';
 import { loadExportPrefs } from '../lib/exportPrefs';
+import { enqueueExport, useExportJobs } from '../lib/exportQueue';
 import type { Quality } from '../lib/video';
 import { chatPrompt, splitForChat } from '../lib/prompts';
 import { displayWords, groupWords } from '../lib/captions';
@@ -44,8 +45,16 @@ export const safeName = (t: string) => t.replace(/[^\w\- ]+/g, '').trim().slice(
 
 export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onRecaption, onDelete, onChange, onPaste, onSwitchCaptions }: Props) {
     const [sort, setSort] = useState<'score' | 'time'>('score');
-    const [batch, setBatch] = useState<{ i: number; n: number; ratio: number } | null>(null);
-    const [batchError, setBatchError] = useState('');
+    // "Export all" adds every clip to the shared export queue; this shows how far that batch is
+    const jobs = useExportJobs();
+    // the latest "Export all" of this project (still found after leaving the page and coming back)
+    const group = [...jobs].reverse().find((j) => j.projectId === project.id && j.group)?.group ?? '';
+    const batchJobs = group ? jobs.filter((j) => j.group === group) : [];
+    const batchLeft = batchJobs.filter((j) => j.status === 'waiting' || j.status === 'rendering');
+    const batchNow = batchJobs.find((j) => j.status === 'rendering');
+    const batch = batchLeft.length ? { i: batchJobs.findIndex((j) => j === (batchNow ?? batchLeft[0])), n: batchJobs.length, ratio: batchNow?.progress ?? 0 } : null;
+    const failed = batchJobs.filter((j) => j.status === 'error');
+    const batchError = failed.length ? `${failed.length} export${failed.length > 1 ? 's' : ''} failed: ${failed[0].error}` : '';
     const [confirmDelete, setConfirmDelete] = useState(false);
     const [reel, setReel] = useState(false);
     const [compile, setCompile] = useState(false);
@@ -55,40 +64,31 @@ export default function ProjectView({ project, video, progress, error, brand, on
 
     const clips = useMemo(() => [...project.clips].sort((a, b) => (sort === 'score' ? b.score - a.score : a.start - b.start)), [project.clips, sort]);
 
-    async function exportAll() {
+    function exportAll() {
         if (!video || !project.transcript) return;
-        setBatchError('');
-        try {
-            for (let i = 0; i < clips.length; i++) {
-                setBatch({ i, n: clips.length, ratio: 0 });
-                const blob = await renderClip({
-                    file: video.file,
-                    clip: clips[i],
-                    words: project.transcript.words,
-                    style: project.style,
-                    brand,
-                    quality: loadExportPrefs().quality,
-                    fps: loadExportPrefs().fps,
-                    videoWidth: project.width,
-                    videoHeight: project.height,
-                    speakers: project.speakers,
-                    music: project.music,
-                    onProgress: (ratio) => setBatch({ i, n: clips.length, ratio })
-                });
-                saveBlob(blob, `${String(i + 1).padStart(2, '0')} ${safeName(clips[i].title)}.mp4`);
-            }
-            const notes = clips
-                .map((c, i) => {
-                    const tags = c.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
-                    return `${String(i + 1).padStart(2, '0')}. ${c.title}\nScore: ${c.score}\n\n${c.description}\n\n${tags}\n`;
-                })
-                .join('\n------------------------------\n\n');
-            saveBlob(new Blob([notes], { type: 'text/plain' }), `${safeName(project.name)} - titles and descriptions.txt`);
-        } catch (e) {
-            setBatchError((e as Error).message);
-        } finally {
-            setBatch(null);
-        }
+        const g = `all-${Date.now()}`;
+        const prefs = loadExportPrefs();
+        const words = project.transcript.words;
+        // the notes file is written first, so it is there even if you stop halfway
+        const notes = clips
+            .map((c, i) => {
+                const tags = c.hashtags.map((h) => (h.startsWith('#') ? h : `#${h}`)).join(' ');
+                return `${String(i + 1).padStart(2, '0')}. ${c.title}\nScore: ${c.score}\n\n${c.description}\n\n${tags}\n`;
+            })
+            .join('\n------------------------------\n\n');
+        saveBlob(new Blob([notes], { type: 'text/plain' }), `${safeName(project.name)} - titles and descriptions.txt`);
+        clips.forEach((clip, i) =>
+            enqueueExport({
+                label: clip.title || `Clip ${i + 1}`,
+                projectId: project.id,
+                clipId: clip.id,
+                group: g,
+                filename: `${String(i + 1).padStart(2, '0')} ${safeName(clip.title)}.mp4`,
+                save: saveBlob,
+                run: (onProgress) =>
+                    renderClip({ file: video.file, clip, words, style: project.style, brand, quality: prefs.quality, fps: prefs.fps, videoWidth: project.width, videoHeight: project.height, speakers: project.speakers, music: project.music, onProgress })
+            })
+        );
     }
 
     return (

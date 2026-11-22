@@ -295,12 +295,12 @@ export default function Planner({ projects, onOpenClip }: { projects: Project[];
                         <PostingHours hours={plan.hours} onChange={(h) => setPlan({ ...plan, hours: h.length ? h : plan.hours })} />
                         <div className="flex flex-wrap items-center gap-3 border-t border-white/10 p-3 text-xs text-muted">
                             {perm === 'granted' ? (
-                                <span className="flex items-center gap-1.5 text-emerald-300"><Bell size={13} /> Reminders on: you get a notification when a clip is due (while Clipsmith is open).</span>
+                                <span className="flex items-center gap-1.5 text-emerald-300"><Bell size={13} /> Reminders on: you get a notification when a clip is due (while ClipHeist is open).</span>
                             ) : perm === 'unsupported' ? (
                                 <span>This browser can’t show reminders; the banner at the top shows clips that are due.</span>
                             ) : (
                                 <>
-                                    <span>Get a notification when it’s time to post (while Clipsmith is open).</span>
+                                    <span>Get a notification when it’s time to post (while ClipHeist is open).</span>
                                     <button className="tl-btn" onClick={() => Notification.requestPermission().then(setPerm)}><Bell size={13} /> Turn on reminders</button>
                                 </>
                             )}
@@ -325,7 +325,7 @@ export default function Planner({ projects, onOpenClip }: { projects: Project[];
                     </section>
                     <section className="panel flex flex-col gap-3 p-5">
                         <h2 className="text-lg font-bold">2. Learn from your own posts</h2>
-                        <p className="text-sm text-muted">After a clip has been up for a day, open it in the calendar, tick <b>Posted</b> and type its views. Clipsmith shows which posting times work best for you.</p>
+                        <p className="text-sm text-muted">After a clip has been up for a day, open it in the calendar, tick <b>Posted</b> and type its views. ClipHeist shows which posting times work best for you.</p>
                         {ranked.length === 0 ? (
                             <p className="rounded-lg bg-white/[0.04] p-3 text-sm text-muted">No results yet. Add views for a few posted clips to see this chart.</p>
                         ) : (
@@ -493,7 +493,7 @@ const GUIDES: { title: string; body: React.ReactNode }[] = [
         title: 'Schedule a Short in YouTube Studio',
         body: (
             <ol className="list-decimal space-y-1 pl-5">
-                <li>Export the clip in Clipsmith (vertical 9:16, under 3 minutes).</li>
+                <li>Export the clip in ClipHeist (vertical 9:16, under 3 minutes).</li>
                 <li>Open <b>studio.youtube.com</b> on your computer and click <b>Create → Upload videos</b>.</li>
                 <li>Paste the title, then the description + hashtags from the planner (click the clip in the calendar).</li>
                 <li>Pick a thumbnail if offered, set <b>Audience</b> (usually “No, it’s not made for kids”), then <b>Next</b> until <b>Visibility</b>.</li>
@@ -507,7 +507,7 @@ const GUIDES: { title: string; body: React.ReactNode }[] = [
         body: (
             <ul className="list-disc space-y-1 pl-5">
                 <li><b>Speed beats polish.</b> Search interest is highest in the first days, so post the same day you play.</li>
-                <li>Put the game name <b>first</b> in the title: “GTA 6: the cops did WHAT 💀”. Add it as a hashtag (Clipsmith does this from the Game field).</li>
+                <li>Put the game name <b>first</b> in the title: “GTA 6: the cops did WHAT 💀”. Add it as a hashtag (ClipHeist does this from the Game field).</li>
                 <li>Post <b>2–4 Shorts a day</b> while it trends, spread over your posting times.</li>
                 <li>Mix types: funny fails, rage, “things you missed”, first reactions. Watch which do best and make more of those.</li>
                 <li>Reply to comments in the first hour. It brings people back to the video.</li>
@@ -520,7 +520,7 @@ const GUIDES: { title: string; body: React.ReactNode }[] = [
             <ul className="list-disc space-y-1 pl-5">
                 <li>The first 3 seconds decide if people swipe. Start on the action or the funniest line, not on a slow lead-in (trim it in the timeline).</li>
                 <li>Use the <b>hook title</b> to say what is about to happen: “He did NOT expect this”.</li>
-                <li>Keep titles short and specific. Questions and reactions (“POV:”, “Why did he…”) work well. Clipsmith suggests alternatives in the Post tab of the editor.</li>
+                <li>Keep titles short and specific. Questions and reactions (“POV:”, “Why did he…”) work well. ClipHeist suggests alternatives in the Post tab of the editor.</li>
                 <li>Don’t promise something the clip doesn’t show; viewers leave and the Short stops being pushed.</li>
             </ul>
         )
