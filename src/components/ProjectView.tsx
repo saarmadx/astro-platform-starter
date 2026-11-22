@@ -41,6 +41,14 @@ export function saveBlob(blob: Blob, name: string) {
     setTimeout(() => URL.revokeObjectURL(a.href), 20_000);
 }
 
+function lastStep(id: string): string {
+    try {
+        return (localStorage.getItem(`clipsmith.lastStep.${id}`) ?? '').replace(/ · about \d+ min left/, '');
+    } catch {
+        return '';
+    }
+}
+
 export const safeName = (t: string) => t.replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'clip';
 
 export default function ProjectView({ project, video, progress, error, brand, onOpenClip, onAttach, onRegenerate, onRecaption, onDelete, onChange, onPaste, onSwitchCaptions }: Props) {
@@ -227,6 +235,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
                             The page was closed or refreshed while it was working.
                             {project.partial ? ` Captions are saved up to ${Math.round((project.partial.nextChunk * 120) / 60)} min, so it continues from there.` : ''}
                         </p>
+                        {lastStep(project.id) && <p className="text-xs text-muted">It stopped during: {lastStep(project.id)}</p>}
                     </div>
                     <button className="btn-accent !py-2" disabled={!video} onClick={() => onRegenerate(project.options)}>
                         {video ? 'Continue' : 'Select the video first (above)'}

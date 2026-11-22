@@ -17,7 +17,20 @@ import type { Brand, Clip, Project, StyleSettings, Word } from './types';
 // pieces that several engines render at the same time (one per core), then joined. The sound is
 // rendered once in a single pass, so there are no clicks where pieces meet.
 
-type Engine = { ff: Promise<FFmpeg>; mounted: File | null; progress: number; /** seconds of output this job makes (0 = not tracked) */ expected: number };
+type Engine = {
+    ff: Promise<FFmpeg>;
+    mounted: File | null;
+    progress: number;
+    /** seconds of output this job makes (0 = not tracked) */
+    expected: number;
+    /** jobs run so far, and jobs running now */
+    uses: number;
+    active: number;
+};
+/** An engine that has run this many jobs is replaced by a fresh one before the next job.
+ *  The video engine slowly wears out: after ~60 jobs in a row on a big video (e.g. reading the
+ *  audio of a long stream piece by piece) it can crash the whole tab. A fresh engine never does. */
+const ENGINE_JOBS = 15;
 const pool: (Engine | undefined)[] = [];
 let progressListener: (() => void) | null = null;
 const INPUT_DIR = '/input';
@@ -60,11 +73,36 @@ function engineAt(i: number): Engine {
     let e = pool[i];
     if (!e) {
         const ff = createEngine(i);
-        e = { ff, mounted: null, progress: 0, expected: 0 };
+        const engine: Engine = { ff, mounted: null, progress: 0, expected: 0, uses: 0, active: 0 };
+        e = engine;
         pool[i] = e;
-        ff.catch(() => (pool[i] = undefined));
+        ff.then((f) => {
+            // count every job this engine runs, wherever it comes from
+            const exec = f.exec.bind(f);
+            f.exec = async (...a: Parameters<FFmpeg['exec']>) => {
+                engine.active++;
+                try {
+                    return await exec(...a);
+                } finally {
+                    engine.active--;
+                    engine.uses++;
+                }
+            };
+        }).catch(() => (pool[i] = undefined));
     }
     return e;
+}
+
+/** Replace a worn-out engine with a fresh one (only while it is idle). */
+async function freshen(i: number) {
+    const e = pool[i];
+    if (!e || e.uses < ENGINE_JOBS || e.active > 0) return;
+    pool[i] = undefined;
+    try {
+        (await e.ff).terminate();
+    } catch {
+        /* already gone */
+    }
 }
 
 export function getFFmpeg(): Promise<FFmpeg> {
@@ -73,6 +111,7 @@ export function getFFmpeg(): Promise<FFmpeg> {
 
 /** Mount the source video into an engine without copying it into memory (works for big files). */
 async function mountOn(i: number, file: File): Promise<{ ff: FFmpeg; input: string }> {
+    await freshen(i);
     const e = engineAt(i);
     const ff = await e.ff;
     if (e.mounted !== file) {
@@ -97,10 +136,10 @@ export async function extractAudioChunks(
     chunkSeconds = CHUNK_SECONDS,
     pad = 0
 ): Promise<{ offset: number; blob: Blob }[]> {
-    const { ff, input } = await mountOn(0, file);
     const count = Math.max(1, Math.ceil(duration / chunkSeconds));
     const chunks: { offset: number; blob: Blob }[] = [];
     for (let i = 0; i < count; i++) {
+        const { ff, input } = await mountOn(0, file);
         const offset = Math.max(0, i * chunkSeconds - pad);
         const len = chunkSeconds + pad + (i * chunkSeconds - offset);
         progressListener = () => onProgress((i + (pool[0]?.progress ?? 0)) / count);
@@ -118,9 +157,9 @@ export async function extractAudioChunks(
 
 /** Audio of chosen stretches only (e.g. the clips), as 16 kHz mono mp3 pieces. */
 export async function extractAudioRanges(file: File, ranges: { start: number; end: number }[], onProgress: (ratio: number) => void): Promise<{ offset: number; blob: Blob }[]> {
-    const { ff, input } = await mountOn(0, file);
     const out: { offset: number; blob: Blob }[] = [];
     for (let i = 0; i < ranges.length; i++) {
+        const { ff, input } = await mountOn(0, file);
         const r = ranges[i];
         onProgress(i / ranges.length);
         const path = `/range_${i}.mp3`;

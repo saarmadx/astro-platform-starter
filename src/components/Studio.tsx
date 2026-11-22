@@ -89,7 +89,15 @@ export default function Studio() {
     }, []);
 
     const runTokens = useRef<Record<string, number>>({});
-    const setStep = (id: string, label: string, ratio: number) => setProgress((pr) => ({ ...pr, [id]: { label, ratio } }));
+    const setStep = (id: string, label: string, ratio: number) => {
+        // remember the last step, so "Processing stopped" can say where it stopped if the tab closes
+        try {
+            localStorage.setItem(`clipsmith.lastStep.${id}`, label);
+        } catch {
+            /* storage full or blocked: not important */
+        }
+        setProgress((pr) => ({ ...pr, [id]: { label, ratio } }));
+    };
 
     /** transcribe (if needed) -> find clips -> reframe + thumbnails */
     const runPromises = useRef<Record<string, Promise<void>>>({});
