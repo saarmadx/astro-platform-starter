@@ -93,6 +93,23 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     const [language, setLanguage] = useState('english');
     const [asrQuality, setAsrQuality] = useState<AsrQuality>('fast');
     const [speedBoost, setSpeedBoost] = useState(false);
+    // optional face zoom on awkward silences, off unless you switch it on (remembered)
+    const [faceZoom, setFaceZoomState] = useState(false);
+    useEffect(() => {
+        try {
+            setFaceZoomState(localStorage.getItem('clipsmith.faceZoom') === '1');
+        } catch {
+            /* no storage: stays off */
+        }
+    }, []);
+    const setFaceZoom = (on: boolean) => {
+        setFaceZoomState(on);
+        try {
+            localStorage.setItem('clipsmith.faceZoom', on ? '1' : '0');
+        } catch {
+            /* not important */
+        }
+    };
     const boostTouched = useRef(false);
     const [longestMin, setLongestMin] = useState(0);
     const [gpu, setGpu] = useState<boolean | null>(null);
@@ -169,7 +186,7 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                     highlight: tpl.defaultHighlight,
                     keepShape: captionsOnly && keepShape,
                     preset,
-                    options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality, captionsOnly, speedBoost: speedBoost && asr === 'local' && !captionsOnly }
+                    options: { minSeconds: len.min, maxSeconds: len.max, maxClips, topic, mode, picker, asr, language, asrQuality, captionsOnly, speedBoost: speedBoost && asr === 'local' && !captionsOnly, faceZoom: faceZoom && !captionsOnly }
                 }))
             );
             // a batch stays on this page: get ready for the next one
@@ -336,6 +353,15 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
                                 <input type="file" accept=".json,.txt,.log,application/json,text/plain" className="sr-only" onChange={(e) => setChatFile(e.target.files?.[0] ?? null)} />
                             </label>
                             <span className="text-xs text-muted">Twitch chat JSON (TwitchDownloader), YouTube live chat JSON (yt-dlp) or a text log with timestamps.</span>
+                        </Option>
+                        <Option label="Effects (optional)">
+                            <label className="flex cursor-pointer items-start gap-2 rounded-xl border border-white/10 px-3 py-2 text-sm hover:bg-white/5">
+                                <input type="checkbox" className="mt-1 accent-[var(--color-accent)]" checked={faceZoom} onChange={(e) => setFaceZoom(e.target.checked)} data-face-zoom />
+                                <span>
+                                    <b>😶 Face zoom on awkward silences</b>
+                                    <span className="block text-xs text-muted">When nobody talks for a moment, it slowly zooms in on the face, aimed at the eyes and mouth (works on faces that are only eyes and a mouth too). You can switch it off per clip in the editor.</span>
+                                </span>
+                            </label>
                         </Option>
                         <Option label="Game or topic (optional, also added as a hashtag)">
                             <input className="input" value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. GTA 6" />

@@ -3,10 +3,11 @@ import { ArrowLeft, Captions as CaptionsIcon, ChevronLeft, ChevronRight, Downloa
 import { projectEvents } from '../lib/audio';
 import { bleepSpans } from '../lib/censor';
 import { buildSrt, displayWords, groupWords } from '../lib/captions';
-import { drawScene, drawVideoLayer, roundRect, stickerBox, wrap } from '../lib/draw';
+import { drawScene, drawVideoLayer, roundRect, sourcePointAt, stickerBox, wrap } from '../lib/draw';
 import { allSfx, autoReplay, autoSfx, autoShakes, cutTimes, PIP_DEFAULT, replayLength } from '../lib/fx';
 import { playSfx, SFX_KINDS } from '../lib/sfx';
-import { analyseClip, detectFacecam } from '../lib/faces';
+import { analyseClip, closeVideo, detectFacecam, openVideo } from '../lib/faces';
+import { makeFaceZooms, withFaceZooms } from '../lib/facezoom';
 import { outputSize } from '../lib/geometry';
 import { DEFAULT_SPEAKER_COLORS, TEMPLATES, TITLE_FONT } from '../lib/templates';
 import { ensureSegs, outputDuration, removeRanges, segmentsOf, silenceCuts, skipCut, toOutputClamped, toSource, withSegs } from '../lib/timeline';
@@ -64,6 +65,10 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         saveExportPrefs(p);
     };
     const quality = exportPrefs.quality;
+    // face zoom on awkward silences: busy while looking for the eyes; "pick" = next click on the preview aims it
+    const [faceBusy, setFaceBusy] = useState(false);
+    const [faceMsg, setFaceMsg] = useState('');
+    const [pickAim, setPickAim] = useState(false);
     // exports go through the shared queue, so they keep going while you edit other clips
     const allJobs = useExportJobs();
     const myJob = [...allJobs].reverse().find((j) => j.projectId === project.id && j.clipId === clip?.id);
@@ -325,6 +330,65 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
         if (prev) commit({ ...latest.current, clips: latest.current.clips.map((c) => (c.id === clip.id ? prev : c)) });
     };
 
+    /** Adds (or redoes) face zooms for some clips; reads frames from a hidden copy of the video. */
+    async function addFaceZooms(ids: string[], aim = latest.current.style.faceAim) {
+        if (!video || !project.transcript) return;
+        setFaceBusy(true);
+        setFaceMsg('Looking for awkward silences and the eyes…');
+        let v: HTMLVideoElement | null = null;
+        let zooms = 0;
+        let found = 0;
+        try {
+            v = await openVideo(video.url);
+            for (const id of ids) {
+                const c = latest.current.clips.find((x) => x.id === id);
+                const tr = latest.current.transcript;
+                if (!c || !tr) continue;
+                const r = await makeFaceZooms(v, c, tr.words, tr.energy, latest.current.style, aim);
+                zooms += r.total;
+                found += r.found;
+                if (id === clip.id) {
+                    history.current = [...history.current.slice(-49), c];
+                    setHistoryLen(history.current.length);
+                }
+                commit({ ...latest.current, clips: latest.current.clips.map((x) => (x.id === id ? { ...x, zooms: withFaceZooms(x, r.zooms) } : x)) });
+            }
+            const where = ids.length > 1 ? `${ids.length} clips` : 'this clip';
+            setFaceMsg(
+                !zooms
+                    ? `No awkward silences in ${where} (a silence needs about 1.2 s with nobody talking).`
+                    : aim
+                      ? `Added ${zooms} face zoom${zooms > 1 ? 's' : ''} in ${where}, aimed where you clicked.`
+                      : found === zooms
+                        ? `Added ${zooms} face zoom${zooms > 1 ? 's' : ''} in ${where}. Found the eyes every time ✓`
+                        : `Added ${zooms} face zoom${zooms > 1 ? 's' : ''} in ${where}. Found the eyes in ${found}; the others aim at the middle. Use “Pick the eyes” to aim them.`
+            );
+        } catch {
+            setFaceMsg('Could not read the video to find the eyes.');
+        } finally {
+            if (v) closeVideo(v);
+            setFaceBusy(false);
+        }
+    }
+    function removeFaceZooms(ids: string[]) {
+        if (ids.includes(clip.id)) {
+            history.current = [...history.current.slice(-49), clip];
+            setHistoryLen(history.current.length);
+        }
+        commit({ ...latest.current, clips: latest.current.clips.map((x) => (ids.includes(x.id) ? { ...x, zooms: (x.zooms ?? []).filter((z) => !z.face) } : x)) });
+        setFaceMsg('');
+    }
+    /** aim every face zoom (all clips) at the point that was clicked */
+    function aimFaceZooms(pt: { x: number; y: number }) {
+        const p = latest.current;
+        commit({
+            ...p,
+            style: { ...p.style, faceAim: pt },
+            clips: p.clips.map((c) => (c.zooms?.some((z) => z.face) ? { ...c, zooms: c.zooms.map((z) => (z.face ? { ...z, fx: pt.x, fy: pt.y } : z)) } : c))
+        });
+        setFaceMsg('Face zooms now aim where you clicked (in all clips).');
+    }
+
     function seek(t: number) {
         const v = videoRef.current;
         freezeRef.current = null;
@@ -503,12 +567,18 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                             ref={canvasRef}
                             width={preview.W}
                             height={preview.H}
-                            className="block h-full w-full touch-none"
+                            className={`block h-full w-full touch-none ${pickAim ? 'cursor-crosshair' : ''}`}
                             onPointerDown={(e) => {
                                 const c = canvasRef.current!;
                                 const r = c.getBoundingClientRect();
                                 const px = ((e.clientX - r.left) / r.width) * c.width;
                                 const py = ((e.clientY - r.top) / r.height) * c.height;
+                                if (pickAim) {
+                                    const v = videoRef.current;
+                                    if (v?.videoWidth) aimFaceZooms(sourcePointAt(clip, style, time, v.videoWidth, v.videoHeight, c.width, c.height, px, py));
+                                    setPickAim(false);
+                                    return;
+                                }
                                 const ctx = c.getContext('2d')!;
                                 const list = clip.stickers ?? [];
                                 for (let i = list.length - 1; i >= 0; i--) {
@@ -536,7 +606,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                             }}
                             onPointerUp={() => (stickerDrag.current = null)}
                         />
-                        {!playing && video && freezeRef.current === null && (
+                        {!playing && video && freezeRef.current === null && !pickAim && (
                             <button className="ed-bigplay" onClick={togglePlay} aria-label="Play">
                                 <span><Play size={26} fill="currentColor" /></span>
                             </button>
@@ -699,6 +769,23 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                         </>
                                     )}
                                 </div>
+                                <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3" data-face-zoom-panel>
+                                    <Toggle
+                                        label="😶 Face zoom on awkward silences"
+                                        hint="When nobody talks for a moment, slowly zoom in on the eyes and mouth"
+                                        checked={(clip.zooms ?? []).some((z) => z.face)}
+                                        onChange={(on) => (on ? addFaceZooms([clip.id]) : removeFaceZooms([clip.id]))}
+                                    />
+                                    <div className="flex flex-wrap gap-2">
+                                        <button className="tl-btn" disabled={faceBusy || !video} onClick={() => addFaceZooms(project.clips.map((c) => c.id))}>Do it for all clips</button>
+                                        {project.clips.some((c) => c.zooms?.some((z) => z.face)) && <button className="tl-btn" disabled={faceBusy} onClick={() => removeFaceZooms(project.clips.map((c) => c.id))}>Remove from all clips</button>}
+                                        <button className={`tl-btn ${pickAim ? '!bg-accent !text-ink' : ''}`} disabled={!video} onClick={() => setPickAim(!pickAim)}>{pickAim ? 'Now click the eyes in the video…' : '🎯 Pick the eyes'}</button>
+                                        {style.faceAim && <button className="tl-btn" disabled={faceBusy} onClick={() => { setStyle({ faceAim: undefined }); addFaceZooms(project.clips.filter((c) => c.zooms?.some((z) => z.face)).map((c) => c.id), undefined); }}>Find the eyes automatically</button>}
+                                    </div>
+                                    {faceBusy && <p className="text-xs text-muted">Looking for awkward silences and the eyes…</p>}
+                                    {!faceBusy && faceMsg && <p className="text-xs text-muted" data-face-msg>{faceMsg}</p>}
+                                    <p className="text-xs text-muted">{style.faceAim ? 'Aim: the point you clicked.' : 'Aim: finds the eyes by itself. If it misses (or for a character with only eyes and a mouth), click “Pick the eyes”, then click between the eyes in the video.'} The zoom strength can be changed by clicking a zoom in the Effects row.</p>
+                                </div>
                                 <div className="flex flex-col gap-2 rounded-xl bg-white/[0.04] p-3">
                                     <p className="text-sm font-semibold">Zooms</p>
                                     <p className="text-xs text-muted">Punch-in zooms on the big moments. Add one at the playhead with Z, then drag it in the Effects row.</p>
@@ -711,7 +798,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                             onClick={() => {
                                                 const laughs = events.filter((e) => e.type === 'reaction' && e.start > clip.start + 1 && e.start < clip.end);
                                                 const auto = laughs.map((e) => ({ start: Math.max(clip.start, e.start - 1.2), end: Math.min(clip.end, e.start + 0.8), scale: 1.3 }));
-                                                if (auto.length) editClip({ zooms: auto });
+                                                if (auto.length) editClip({ zooms: [...(clip.zooms ?? []).filter((z) => z.face), ...auto].sort((a, b) => a.start - b.start) });
                                                 else {
                                                     setBusy('No laughs found in this clip to zoom on.');
                                                     setTimeout(() => setBusy(''), 2500);

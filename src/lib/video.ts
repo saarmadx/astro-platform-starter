@@ -2,13 +2,13 @@ import { FFmpeg, FFFSType } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { bleepSpans } from './censor';
 import { buildAss, captionSize, captionY, displayWords, emojiEvents, groupWords } from './captions';
-import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiPng, pipBox, pipMaskPngs, textOverlayPng, WATERMARK_CYCLE, WATERMARK_SECONDS, watermarkMargins, watermarkPng } from './draw';
+import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiPng, pipBox, pipMaskPngs, textOverlayPng, WATERMARK_CYCLE, WATERMARK_SECONDS, watermarkMargins, watermarkPng, zoomTarget } from './draw';
 import { allShakes, allSfx, allZooms, replayLength } from './fx';
 import { sfxWav } from './sfx';
-import { cropPath, cropWindow, outputSize } from './geometry';
+import { coverBox, cropPath, cropWindow, outputSize, posAt, type Box } from './geometry';
 import { FONT_FILES, getTemplate } from './templates';
 import { keptSegments, outputDuration, segmentsOf, styleAt, toOutput, toOutputClamped, toSource } from './timeline';
-import type { Brand, Clip, Project, StyleSettings, Word } from './types';
+import type { Brand, Clip, Project, StyleSettings, Word, Zoom } from './types';
 
 // All video work happens in the user's browser with ffmpeg.wasm, so videos never have to be
 // uploaded to a server. Only small audio chunks are sent off for transcription.
@@ -307,6 +307,9 @@ function timing(clip: Clip): Timing {
     return { total, replay, freeze, full: snap(total + replay + freeze) };
 }
 
+/** A zoom in a piece's own time (seconds from the piece start). */
+type PieceZoom = Zoom;
+
 /** Framing filters (crop / follow speaker / fit / facecam split) with zooms and shakes. */
 function layout(
     o: RenderOptions,
@@ -314,28 +317,67 @@ function layout(
     v: string,
     W: number,
     H: number,
-    zoomAt: (frameTime: string) => string | null,
-    shake: string | null,
+    zooms: PieceZoom[],
+    shakeAll: string | null,
     cropPoints: { t: number; x: number }[],
     style: StyleSettings,
     addInput: (path: string) => string
 ): string {
     const vw = o.videoWidth;
     const vh = o.videoHeight;
-    const zp = (w: number, h: number) => {
-        const z = zoomAt(`in/${FPS}`);
-        if (!z && !shake) return '';
-        const zexpr = z ?? '1';
+    /**
+     * zoompan for one picture (`region`: the main picture or the facecam). `area` is the part of the
+     * source this picture shows (after cropping to fill), so a zoom aimed at a point (the eyes)
+     * can be centred on it; `fitMap` is used instead for the "fit" layout.
+     */
+    const zp = (w: number, h: number, region: 'main' | 'cam' = 'main', area?: Box, fitMap?: (px: number, py: number) => [number, number]) => {
+        const ft = `in/${FPS}`;
+        const mine = zooms.filter((z) => {
+            const t = zoomTarget(z, style);
+            return t === 'both' || t === region;
+        });
+        // the facecam bubble never shook, so it still doesn't
+        const shake = region === 'cam' && style.layout === 'pip' ? null : shakeAll;
+        if (!mine.length && !shake) return '';
+        let zexpr = '1';
+        let xexpr = 'iw/2-(iw/zoom/2)';
+        let yexpr = 'ih/2-(ih/zoom/2)';
+        for (const z of mine) {
+            const on = `between(${ft},${z.start.toFixed(2)},${z.end.toFixed(2)})`;
+            const sc = z.ease ? `(1+${(z.scale - 1).toFixed(3)}*(3-2*min(1,max(0,(${ft}-${z.start.toFixed(2)})/${z.ease.toFixed(2)})))*pow(min(1,max(0,(${ft}-${z.start.toFixed(2)})/${z.ease.toFixed(2)})),2))` : z.scale.toFixed(3);
+            zexpr = `if(${on},${sc},${zexpr})`;
+            if (z.fx !== undefined && z.fy !== undefined && (area || fitMap)) {
+                let lx: number;
+                let ly: number;
+                if (fitMap) [lx, ly] = fitMap(z.fx * vw, z.fy * vh);
+                else {
+                    lx = (z.fx * vw - area!.x) / area!.w;
+                    ly = (z.fy * vh - area!.y) / area!.h;
+                }
+                lx = Math.min(1, Math.max(0, lx));
+                ly = Math.min(1, Math.max(0, ly));
+                xexpr = `if(${on},${lx.toFixed(4)}*iw-iw/zoom/2,${xexpr})`;
+                yexpr = `if(${on},${ly.toFixed(4)}*ih-ih/zoom/2,${yexpr})`;
+            }
+        }
         const zz = shake ? `if(${shake},max(1.1,${zexpr}),${zexpr})` : zexpr;
         const jx = shake ? `+if(${shake},iw*0.022*sin(in*2.7),0)` : '';
         const jy = shake ? `+if(${shake},ih*0.022*cos(in*3.1),0)` : '';
-        return `,zoompan=z='${zz}':x='max(0,min(iw-iw/zoom,iw/2-(iw/zoom/2)${jx}))':y='max(0,min(ih-ih/zoom,ih/2-(ih/zoom/2)${jy}))':d=1:s=${w}x${h}:fps=${FPS}`;
+        return `,zoompan=z='${zz}':x='max(0,min(iw-iw/zoom,${xexpr}${jx}))':y='max(0,min(ih-ih/zoom,${yexpr}${jy}))':d=1:s=${w}x${h}:fps=${FPS}`;
+    };
+    // where the "follow speaker" crop sits in the middle of this piece (for aiming zooms)
+    const midCropX = (maxX: number) => {
+        if (!cropPoints.length) return maxX * style.cropX;
+        const mid = zooms.length ? (zooms[0].start + zooms[0].end) / 2 : 0;
+        return posAt(cropPoints, mid) * maxX;
     };
     if (style.layout === 'fit') {
         g.push(`[${v}]split[fa][fb]`);
         g.push(`[fa]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=luma_radius=28:luma_power=2,eq=brightness=-0.07[bg]`);
         g.push(`[fb]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg]`);
-        g.push(`[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1${zp(W, H)}[v0]`);
+        const fit = Math.min(W / vw, H / vh);
+        const fitMap = (px: number, py: number): [number, number] => [((W - vw * fit) / 2 + px * fit) / W, ((H - vh * fit) / 2 + py * fit) / H];
+        g.push(`[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1${zp(W, H, 'main', undefined, fitMap)}[v0]`);
     } else if (style.layout === 'split') {
         const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
         const TH = even(H * (style.splitRatio ?? 0.4));
@@ -344,8 +386,8 @@ function layout(
         const gw = even(Math.min(vw, vh * ar));
         const gh = even(Math.min(vh, vw / ar));
         g.push(`[${v}]split[fa][fb]`);
-        g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${W}:${TH}:force_original_aspect_ratio=increase,crop=${W}:${TH},setsar=1${zp(W, TH)}[top]`);
-        g.push(`[fb]crop=${gw}:${gh}:${Math.round((vw - gw) * style.cropX)}:${Math.round((vh - gh) / 2)},scale=${W}:${BH}:force_original_aspect_ratio=increase,crop=${W}:${BH},setsar=1${zp(W, BH)}[bot]`);
+        g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${W}:${TH}:force_original_aspect_ratio=increase,crop=${W}:${TH},setsar=1${zp(W, TH, 'cam', coverBox({ x: Math.round(fc.x * vw), y: Math.round(fc.y * vh), w: even(fc.w * vw), h: even(fc.h * vh) }, W / TH))}[top]`);
+        g.push(`[fb]crop=${gw}:${gh}:${Math.round((vw - gw) * style.cropX)}:${Math.round((vh - gh) / 2)},scale=${W}:${BH}:force_original_aspect_ratio=increase,crop=${W}:${BH},setsar=1${zp(W, BH, 'main', coverBox({ x: Math.round((vw - gw) * style.cropX), y: Math.round((vh - gh) / 2), w: gw, h: gh }, W / BH))}[bot]`);
         g.push(`[top][bot]vstack=inputs=2,drawbox=x=0:y=${TH - 2}:w=${W}:h=4:color=black:t=fill[v0]`);
     } else if (style.layout === 'pip') {
         // full gameplay with the facecam in a round (or rounded) bubble with a white rim
@@ -355,8 +397,8 @@ function layout(
         const mask = addInput('/pipmask.png');
         const rim = addInput('/piprim.png');
         g.push(`[${v}]split[fa][fb]`);
-        g.push(`[fb]crop=${even(cw)}:${even(ch)}:${Math.round((vw - cw) * style.cropX)}:${Math.round(y)},scale=${W}:${H}:flags=bicubic,setsar=1${zp(W, H)}[bg]`);
-        g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${b.s}:${b.s}:force_original_aspect_ratio=increase,crop=${b.s}:${b.s},setsar=1,format=yuva420p[pc]`);
+        g.push(`[fb]crop=${even(cw)}:${even(ch)}:${Math.round((vw - cw) * style.cropX)}:${Math.round(y)},scale=${W}:${H}:flags=bicubic,setsar=1${zp(W, H, 'main', { x: Math.round((vw - cw) * style.cropX), y: Math.round(y), w: even(cw), h: even(ch) })}[bg]`);
+        g.push(`[fa]crop=${even(fc.w * vw)}:${even(fc.h * vh)}:${Math.round(fc.x * vw)}:${Math.round(fc.y * vh)},scale=${b.s}:${b.s}:force_original_aspect_ratio=increase,crop=${b.s}:${b.s},setsar=1${zp(b.s, b.s, 'cam', coverBox({ x: Math.round(fc.x * vw), y: Math.round(fc.y * vh), w: even(fc.w * vw), h: even(fc.h * vh) }, 1))},format=yuva420p[pc]`);
         g.push(`[${mask}]format=gray,scale=${b.s}:${b.s}[pm]`);
         g.push(`[pc][pm]alphamerge[pa]`);
         g.push(`[pa][${rim}]overlay=0:0:shortest=1[pip]`);
@@ -364,7 +406,7 @@ function layout(
     } else {
         const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
         const maxX = Math.max(0, vw - cw);
-        g.push(`[${v}]crop=w=${even(cw)}:h=${even(ch)}:x='${cropExpr(cropPoints, maxX)}':y=${Math.round(y)},scale=${W}:${H}:flags=bicubic,setsar=1${zp(W, H)}[v0]`);
+        g.push(`[${v}]crop=w=${even(cw)}:h=${even(ch)}:x='${cropExpr(cropPoints, maxX)}':y=${Math.round(y)},scale=${W}:${H}:flags=bicubic,setsar=1${zp(W, H, 'main', { x: midCropX(maxX), y: Math.round(y), w: even(cw), h: even(ch) })}[v0]`);
     }
     return 'v0';
 }
@@ -484,15 +526,9 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
     g.push(`[${v}]fps=${FPS},setsar=1[vf]`);
     v = 'vf';
 
-    const zooms = allZooms(clip)
-        .map((z) => ({ start: rel(outT(z.start)), end: rel(outT(z.end)), scale: z.scale }))
+    const zooms: PieceZoom[] = allZooms(clip)
+        .map((z) => ({ ...z, start: rel(outT(z.start)), end: rel(outT(z.end)) }))
         .filter((z) => z.end > 0 && z.start < partLen && z.end - z.start > 0.05);
-    const zoomAt = (ft: string) => {
-        if (!zooms.length) return null;
-        let expr = '1';
-        for (const z of zooms) expr = `if(between(${ft},${z.start.toFixed(2)},${z.end.toFixed(2)}),${z.scale.toFixed(3)},${expr})`;
-        return expr;
-    };
     const shakeTimes = allShakes(clip).filter((s) => s.kind !== 'flash').map((s) => rel(outT(s.t))).filter((a) => a > -0.5 && a < partLen);
     const shake = shakeTimes.length ? shakeTimes.map((a) => `between(in/${FPS},${a.toFixed(2)},${(a + 0.45).toFixed(2)})`).join('+') : null;
     // every piece has a single framing (pieces are split where a part's layout changes)
@@ -502,7 +538,7 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
         inputs.push('-loop', '1', '-i', path);
         return `${n++}:v`;
     };
-    v = layout(o, g, v, W, H, zoomAt, shake, cropPoints, ls, addInput);
+    v = layout(o, g, v, W, H, zooms, shake, cropPoints, ls, addInput);
 
     for (const [i, s] of allShakes(clip).filter((s) => s.kind !== 'shake').entries()) {
         const a = rel(outT(s.t));
@@ -575,7 +611,7 @@ function replayCommand(o: RenderOptions, input: string, W: number, H: number, ou
         inputs.push('-loop', '1', '-i', path);
         return `${n++}:v`;
     };
-    let v = layout(o, g, 'vr', W, H, () => '1.18', null, [{ t: 0, x: at.x }], rs, addInput);
+    let v = layout(o, g, 'vr', W, H, [{ start: 0, end: 100000, scale: 1.18 }], null, [{ t: 0, x: at.x }], rs, addInput);
     if (tm.freeze) {
         g.push(`[${v}]tpad=stop_mode=clone:stop_duration=${(tm.freeze + 0.2).toFixed(2)}[vz]`);
         v = 'vz';

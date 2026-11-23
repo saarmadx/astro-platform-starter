@@ -5,6 +5,7 @@ import { parseChatAnswer, pickByLaughs } from '../lib/freepick';
 import { chatSpikes, parseChat } from '../lib/chat';
 import { analyseClip, closeVideo, detectFacecam, openVideo } from '../lib/faces';
 import { applyFx } from '../lib/presets';
+import { makeFaceZooms, withFaceZooms } from '../lib/facezoom';
 import { cancelTranscription, cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
 import type { Aspect, Brand, Clip, Project, StyleSettings } from '../lib/types';
@@ -235,8 +236,40 @@ export default function Studio() {
         });
         p = { ...p, clips };
         update(p);
-        await reframe(p, url);
+        const done = await reframe(p, url);
         if (p.options.speedBoost && (p.options.asr ?? 'local') === 'local' && !p.options.captionsOnly) await recaption(p.id, 'clips');
+        if (p.options.faceZoom) await faceZoomAll(done, url);
+    }
+
+    /** optional: slow zoom on the eyes at awkward silences, in every clip (after the final captions) */
+    async function faceZoomAll(made: Project, url: string) {
+        const id = made.id;
+        // the saved copy may be newer (Speed boost redoes the captions), but only if it already has these clips
+        const saved = projectsRef.current.find((x) => x.id === id);
+        const same = saved && saved.clips.length === made.clips.length && saved.clips.every((c, i) => c.id === made.clips[i].id);
+        let p = same ? saved : made;
+        if (!p.transcript) return;
+        let video: HTMLVideoElement | null = null;
+        try {
+            video = await openVideo(url);
+            for (let i = 0; i < p.clips.length; i++) {
+                setStep(id, `Face zoom on awkward silences: clip ${i + 1} of ${p.clips.length}`, 0.9 + (0.1 * i) / p.clips.length);
+                const clip = p.clips[i];
+                if (!clip || !p.transcript) continue;
+                try {
+                    const r = await makeFaceZooms(video, clip, p.transcript.words, p.transcript.energy, p.style, p.style.faceAim);
+                    if (!r.total) continue;
+                    p = { ...p, clips: p.clips.map((c) => (c.id === clip.id ? { ...c, zooms: withFaceZooms(c, r.zooms) } : c)) };
+                    update(p);
+                } catch {
+                    /* optional: the clip still works without it */
+                }
+            }
+        } catch {
+            /* the video couldn't be read: no face zooms, everything else is fine */
+        } finally {
+            if (video) closeVideo(video);
+        }
     }
 
     /** thumbnails, and the speaker-following crop when the layout uses it. Optional: never blocks the clips. */
@@ -266,6 +299,7 @@ export default function Studio() {
         }
         p = { ...p, status: 'ready' };
         update(p);
+        return p;
     }
 
     /** clips pasted back from a Claude chat */

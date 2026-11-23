@@ -60,7 +60,7 @@ export function currentFx(clip: Clip): PresetFx {
         sfx: (clip.sfx?.length ?? 0) > 0,
         shakes: (clip.shakes?.length ?? 0) > 0,
         replay: !!clip.replay,
-        zoomLaughs: (clip.zooms?.length ?? 0) > 0,
+        zoomLaughs: (clip.zooms ?? []).some((z) => !z.face),
         silences: segmentsOf(clip).length > 1,
         transition: clip.transition
     };
@@ -71,9 +71,9 @@ export function applyFx(c: Clip, fx: PresetFx, events: AudioEvent[], words: Word
     let n: Clip = { ...c };
     n.hookTitle = fx.hookTitle ? { text: c.hookTitle?.text || shortTitle(c.title), seconds: c.hookTitle?.seconds || 3 } : c.hookTitle ? { ...c.hookTitle, seconds: 0 } : undefined;
     n.freeze = fx.freeze !== null ? { seconds: c.freeze?.seconds || 1.5, text: c.freeze?.text || fx.freeze } : undefined;
-    if (fx.zoomLaughs && !c.zooms?.length) {
+    if (fx.zoomLaughs && !c.zooms?.some((z) => !z.face)) {
         const laughs = events.filter((e) => (e.type === 'reaction' || e.type === 'chat' || e.type === 'loud') && e.start > c.start + 1 && e.start < c.end);
-        n.zooms = laughs.slice(0, 4).map((e) => ({ start: Math.max(c.start, e.start - 1.2), end: Math.min(c.end, e.start + 0.8), scale: 1.3 }));
+        n.zooms = [...(c.zooms ?? []), ...laughs.slice(0, 4).map((e) => ({ start: Math.max(c.start, e.start - 1.2), end: Math.min(c.end, e.start + 0.8), scale: 1.3 }))].sort((a, b) => a.start - b.start);
     }
     if (fx.silences && segmentsOf(c).length <= 1) n = { ...n, ...withSegs(c, removeRanges(segmentsOf(c), silenceCuts(c, words))) };
     n.sfx = fx.sfx ? (c.sfx?.length ? c.sfx : autoSfx(n, events)) : [];

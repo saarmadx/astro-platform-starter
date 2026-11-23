@@ -2,11 +2,11 @@
 // canvas. Used by the live preview, the reel preview and the thumbnail maker; the exported
 // video is built to match it.
 import { captionSize, captionY, displayText, emojiEvents, groupTimes, type DWord } from './captions';
-import { aspectRatio, cropPath, cropWindow, posAt } from './geometry';
+import { aspectRatio, coverBox, cropPath, cropWindow, easedScale, posAt, zoomBox, type Box } from './geometry';
 import { getTemplate, TITLE_FONT } from './templates';
 import { outputDuration, styleAt, toOutputClamped } from './timeline';
 import { allShakes, allZooms, PIP_DEFAULT } from './fx';
-import type { Brand, Clip, Sticker, StyleSettings, Watermark } from './types';
+import type { Brand, Clip, Sticker, StyleSettings, Watermark, Zoom } from './types';
 
 export type Scene = {
     clip: Clip;
@@ -120,32 +120,30 @@ export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w
 }
 
 export function zoomAt(clip: Clip, t: number): number {
-    const z = allZooms(clip).find((s) => t >= s.start && t < s.end);
-    return z ? z.scale : 1;
+    const z = activeZoom(clip, t);
+    return z ? easedScale(z, t) : 1;
 }
 
-/** Draws a source rectangle into a destination rectangle, cropping to fill (cover), with zoom. */
-function drawRegion(ctx: CanvasRenderingContext2D, v: HTMLVideoElement, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number, zoom: number) {
-    // cover: trim the source so its shape matches the destination
-    const dar = dw / dh;
-    if (sw / sh > dar) {
-        const nw = sh * dar;
-        sx += (sw - nw) / 2;
-        sw = nw;
-    } else {
-        const nh = sw / dar;
-        sy += (sh - nh) / 2;
-        sh = nh;
-    }
-    if (zoom !== 1) {
-        const zw = sw / zoom;
-        const zh = sh / zoom;
-        sx += (sw - zw) / 2;
-        sy += (sh - zh) / 2;
-        sw = zw;
-        sh = zh;
-    }
-    ctx.drawImage(v, sx, sy, sw, sh, dx, dy, dw, dh);
+/** The zoom playing at time t (the first one listed wins, like the export). */
+export function activeZoom(clip: Clip, t: number): Zoom | undefined {
+    return allZooms(clip).find((s) => t >= s.start && t < s.end);
+}
+
+/** Which picture a zoom applies to: one aimed at a point inside the facecam zooms the facecam
+ *  (split top / bubble); other aimed zooms zoom the main picture; plain zooms keep the old rule. */
+export function zoomTarget(z: Zoom, style: StyleSettings): 'cam' | 'main' | 'both' {
+    const hasCam = style.layout === 'split' || style.layout === 'pip';
+    if (z.fx === undefined || z.fy === undefined) return style.layout === 'split' ? 'both' : 'main';
+    const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
+    const inCam = z.fx >= fc.x && z.fx <= fc.x + fc.w && z.fy >= fc.y && z.fy <= fc.y + fc.h;
+    return hasCam && inCam ? 'cam' : 'main';
+}
+
+/** Draws a source rectangle into a destination rectangle, cropping to fill (cover), with zoom
+ *  (aimed at a point in source pixels when given). */
+function drawRegion(ctx: CanvasRenderingContext2D, v: HTMLVideoElement, sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number, zoom: number, px?: number, py?: number) {
+    const r = zoomBox(coverBox({ x: sx, y: sy, w: sw, h: sh }, dw / dh), zoom, px, py);
+    ctx.drawImage(v, r.x, r.y, r.w, r.h, dx, dy, dw, dh);
 }
 
 export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoElement, t: number, clip: Clip, baseStyle: StyleSettings) {
@@ -157,27 +155,44 @@ export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoEl
     const vw = video.videoWidth;
     const vh = video.videoHeight;
     if (!vw || video.readyState < 2) return;
-    const zoom = zoomAt(clip, t);
+    const az = activeZoom(clip, t);
+    const zoom = az ? easedScale(az, t) : 1;
+    const target = az ? zoomTarget(az, style) : 'main';
+    const aimed = az && az.fx !== undefined && az.fy !== undefined;
+    const px = aimed ? az!.fx! * vw : undefined;
+    const py = aimed ? az!.fy! * vh : undefined;
+    const zMain = target === 'cam' ? 1 : zoom;
+    const zCam = target === 'main' ? 1 : zoom;
 
     if (style.layout === 'fit') {
         const cover = Math.max(W / vw, H / vh);
+        const fit = Math.min(W / vw, H / vh);
+        ctx.save();
+        if (aimed && zMain > 1) {
+            // zoom the whole picture around the point, like the export does
+            const lx = (W - vw * fit) / 2 + px! * fit;
+            const ly = (H - vh * fit) / 2 + py! * fit;
+            const b = zoomBox({ x: 0, y: 0, w: W, h: H }, zMain, lx, ly);
+            ctx.setTransform(zMain, 0, 0, zMain, -b.x * zMain, -b.y * zMain);
+        }
         ctx.save();
         ctx.filter = 'blur(24px) brightness(0.8)';
         ctx.drawImage(video, (W - vw * cover) / 2, (H - vh * cover) / 2, vw * cover, vh * cover);
         ctx.restore();
-        const fit = Math.min(W / vw, H / vh) * zoom;
-        ctx.drawImage(video, (W - vw * fit) / 2, (H - vh * fit) / 2, vw * fit, vh * fit);
+        const f = aimed ? fit : fit * zMain;
+        ctx.drawImage(video, (W - vw * f) / 2, (H - vh * f) / 2, vw * f, vh * f);
+        ctx.restore();
         return;
     }
 
     if (style.layout === 'split') {
         const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
         const TH = Math.round(H * (style.splitRatio ?? 0.4));
-        drawRegion(ctx, video, fc.x * vw, fc.y * vh, fc.w * vw, fc.h * vh, 0, 0, W, TH, zoom);
+        drawRegion(ctx, video, fc.x * vw, fc.y * vh, fc.w * vw, fc.h * vh, 0, 0, W, TH, zCam, px, py);
         const ar = W / (H - TH);
         const cw = Math.min(vw, vh * ar);
         const ch = Math.min(vh, vw / ar);
-        drawRegion(ctx, video, (vw - cw) * style.cropX, (vh - ch) / 2, cw, ch, 0, TH, W, H - TH, zoom);
+        drawRegion(ctx, video, (vw - cw) * style.cropX, (vh - ch) / 2, cw, ch, 0, TH, W, H - TH, zMain, px, py);
         ctx.fillStyle = '#000';
         ctx.fillRect(0, TH - 2, W, 4);
         return;
@@ -185,19 +200,17 @@ export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoEl
 
     const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
     const x = (vw - cw) * posAt(cropPath(clip, style, vw, vh), t);
-    drawRegion(ctx, video, x, y, cw, ch, 0, 0, W, H, zoom);
+    drawRegion(ctx, video, x, y, cw, ch, 0, 0, W, H, zMain, px, py);
 
     if (style.layout === 'pip') {
         // facecam bubble in a corner over the full gameplay
         const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
         const b = pipBox(style, W, H);
-        const fw = fc.w * vw;
-        const fh = fc.h * vh;
-        const side = Math.min(fw, fh);
+        const sq = zoomBox(coverBox({ x: fc.x * vw, y: fc.y * vh, w: fc.w * vw, h: fc.h * vh }, 1), zCam, px, py);
         ctx.save();
         pipPath(ctx, b);
         ctx.clip();
-        ctx.drawImage(video, fc.x * vw + (fw - side) / 2, fc.y * vh + (fh - side) / 2, side, side, b.x, b.y, b.s, b.s);
+        ctx.drawImage(video, sq.x, sq.y, sq.w, sq.h, b.x, b.y, b.s, b.s);
         ctx.restore();
         ctx.save();
         ctx.lineWidth = b.border;
@@ -206,6 +219,50 @@ export function drawVideoLayer(ctx: CanvasRenderingContext2D, video: HTMLVideoEl
         ctx.stroke();
         ctx.restore();
     }
+}
+
+/** The point of the source video (fractions) under a point of the preview (canvas pixels):
+ *  the same maths as drawVideoLayer, run backwards. Used to pick the eyes by clicking them. */
+export function sourcePointAt(clip: Clip, baseStyle: StyleSettings, t: number, vw: number, vh: number, W: number, H: number, cx: number, cy: number): { x: number; y: number } {
+    const style = styleAt(clip, baseStyle, t);
+    const az = activeZoom(clip, t);
+    const zoom = az ? easedScale(az, t) : 1;
+    const target = az ? zoomTarget(az, style) : 'main';
+    const aimed = az && az.fx !== undefined && az.fy !== undefined;
+    const px = aimed ? az!.fx! * vw : undefined;
+    const py = aimed ? az!.fy! * vh : undefined;
+    const zMain = target === 'cam' ? 1 : zoom;
+    const zCam = target === 'main' ? 1 : zoom;
+    const back = (src: Box, dx: number, dy: number, dw: number, dh: number) => ({ x: (src.x + ((cx - dx) / dw) * src.w) / vw, y: (src.y + ((cy - dy) / dh) * src.h) / vh });
+    const clamp = (p: { x: number; y: number }) => ({ x: Math.min(1, Math.max(0, p.x)), y: Math.min(1, Math.max(0, p.y)) });
+    const fc = style.facecam ?? { x: 0, y: 0, w: 0.3, h: 0.3 };
+    if (style.layout === 'fit') {
+        const fit = Math.min(W / vw, H / vh);
+        let x = cx;
+        let y = cy;
+        if (aimed && zMain > 1) {
+            const b = zoomBox({ x: 0, y: 0, w: W, h: H }, zMain, (W - vw * fit) / 2 + px! * fit, (H - vh * fit) / 2 + py! * fit);
+            x = b.x + cx / zMain;
+            y = b.y + cy / zMain;
+        }
+        const f = aimed ? fit : fit * zMain;
+        return clamp({ x: (x - (W - vw * f) / 2) / f / vw, y: (y - (H - vh * f) / 2) / f / vh });
+    }
+    if (style.layout === 'split') {
+        const TH = Math.round(H * (style.splitRatio ?? 0.4));
+        if (cy < TH) return clamp(back(zoomBox(coverBox({ x: fc.x * vw, y: fc.y * vh, w: fc.w * vw, h: fc.h * vh }, W / TH), zCam, px, py), 0, 0, W, TH));
+        const ar = W / (H - TH);
+        const cw = Math.min(vw, vh * ar);
+        const ch = Math.min(vh, vw / ar);
+        return clamp(back(zoomBox(coverBox({ x: (vw - cw) * style.cropX, y: (vh - ch) / 2, w: cw, h: ch }, ar), zMain, px, py), 0, TH, W, H - TH));
+    }
+    if (style.layout === 'pip') {
+        const b = pipBox(style, W, H);
+        if (cx >= b.x && cx <= b.x + b.s && cy >= b.y && cy <= b.y + b.s) return clamp(back(zoomBox(coverBox({ x: fc.x * vw, y: fc.y * vh, w: fc.w * vw, h: fc.h * vh }, 1), zCam, px, py), b.x, b.y, b.s, b.s));
+    }
+    const { cw, ch, y } = cropWindow(vw, vh, style.aspect);
+    const x = (vw - cw) * posAt(cropPath(clip, style, vw, vh), t);
+    return clamp(back(zoomBox(coverBox({ x, y, w: cw, h: ch }, W / H), zMain, px, py), 0, 0, W, H));
 }
 
 /** Where the picture-in-picture facecam sits (same maths as the export). */

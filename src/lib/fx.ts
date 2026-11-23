@@ -1,6 +1,6 @@
 // One-click auto placement for the optional effects.
 import { keptSegments, segmentsOf } from './timeline';
-import type { AudioEvent, Clip, PipSettings, SfxKind, Span } from './types';
+import type { AudioEvent, Clip, PipSettings, SfxKind, Span, Zoom } from './types';
 
 const inside = (clip: Clip, t: number) => t > clip.start + 0.3 && t < clip.end - 0.2;
 
@@ -8,7 +8,7 @@ const inside = (clip: Clip, t: number) => t > clip.start + 0.3 && t < clip.end -
 export function autoSfx(clip: Clip, events: AudioEvent[]): { t: number; kind: SfxKind }[] {
     const out: { t: number; kind: SfxKind }[] = [];
     for (const e of events) if ((e.type === 'reaction' || e.type === 'chat') && inside(clip, e.start)) out.push({ t: Math.max(clip.start, e.start - 0.15), kind: 'boom' });
-    for (const z of clip.zooms ?? []) if (inside(clip, z.start)) out.push({ t: Math.max(clip.start, z.start - 0.2), kind: 'whoosh' });
+    for (const z of clip.zooms ?? []) if (!z.face && inside(clip, z.start)) out.push({ t: Math.max(clip.start, z.start - 0.2), kind: 'whoosh' });
     // keep them at least 1.5s apart
     const sorted = out.sort((a, b) => a.t - b.t);
     return sorted.filter((s, i) => i === 0 || s.t - sorted[i - 1].t > 1.5).slice(0, 12);
@@ -51,7 +51,7 @@ export function allShakes(clip: Clip): NonNullable<Clip['shakes']> {
 }
 
 /** Zooms, including the quick punch-in a "zoom" transition adds at every cut. */
-export function allZooms(clip: Clip): (Span & { scale: number })[] {
+export function allZooms(clip: Clip): Zoom[] {
     const base = clip.zooms ?? [];
     if (clip.transition?.kind !== 'zoom') return base;
     const segs = segmentsOf(clip);

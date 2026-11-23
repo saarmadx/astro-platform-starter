@@ -44,3 +44,33 @@ export function posAt(path: { t: number; x: number }[], t: number): number {
     }
     return path[path.length - 1].x;
 }
+
+export type Box = { x: number; y: number; w: number; h: number };
+
+/** The part of `r` that fills a `aspect` (w/h) frame when scaled to cover it (trimmed equally on both sides). */
+export function coverBox(r: Box, aspect: number): Box {
+    if (r.w / r.h > aspect) {
+        const w = r.h * aspect;
+        return { x: r.x + (r.w - w) / 2, y: r.y, w, h: r.h };
+    }
+    const h = r.w / aspect;
+    return { x: r.x, y: r.y + (r.h - h) / 2, w: r.w, h };
+}
+
+/** `r` zoomed in `z` times around the point (px, py), staying inside `r`. Without a point: the middle. */
+export function zoomBox(r: Box, z: number, px?: number, py?: number): Box {
+    if (z <= 1) return r;
+    const w = r.w / z;
+    const h = r.h / z;
+    const cx = px ?? r.x + r.w / 2;
+    const cy = py ?? r.y + r.h / 2;
+    return { x: Math.min(r.x + r.w - w, Math.max(r.x, cx - w / 2)), y: Math.min(r.y + r.h - h, Math.max(r.y, cy - h / 2)), w, h };
+}
+
+/** Zoom strength at time t (a slow push-in when the zoom has `ease`). */
+export function easedScale(z: { start: number; scale: number; ease?: number }, t: number): number {
+    if (!z.ease) return z.scale;
+    const k = Math.min(1, Math.max(0, (t - z.start) / z.ease));
+    const s = k * k * (3 - 2 * k); // smooth start and stop
+    return 1 + (z.scale - 1) * s;
+}

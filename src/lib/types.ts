@@ -41,7 +41,7 @@ export type Clip = {
     /** parts of the clip removed in the timeline (absolute source times) */
     cuts?: Span[];
     /** punch-in zooms (absolute source times) */
-    zooms?: (Span & { scale: number })[];
+    zooms?: Zoom[];
     /** big headline at the top for the first seconds */
     hookTitle?: { text: string; seconds: number };
     /** freeze the last frame with a line of text */
@@ -82,6 +82,9 @@ export type Sticker = {
 };
 
 export type Span = { start: number; end: number };
+/** A zoom. Without a point it zooms on the middle; with one (fx, fy: fractions of the source
+ *  video frame) it zooms on that point, e.g. the eyes. `ease` = seconds of slow push-in. */
+export type Zoom = Span & { scale: number; fx?: number; fy?: number; ease?: number; /** added by face zoom on awkward silences */ face?: boolean };
 
 /** One part of a clip on the timeline. Each part can have its own framing. */
 export type Seg = { id: string; start: number; end: number; layout?: Layout; cropX?: number; /** facecam height for this part (split layout) */ splitRatio?: number };
@@ -126,6 +129,8 @@ export type StyleSettings = {
     sfxVolume?: number;
     /** which captions to show when a clip has a translation */
     captionLang?: 'original' | 'translated' | 'both';
+    /** where face zooms aim when picked by hand (fractions of the source frame) */
+    faceAim?: { x: number; y: number };
 };
 
 export type Project = {
@@ -155,6 +160,8 @@ export type Project = {
         captionsOnly?: boolean;
         /** optional: quick captions for the whole video, then Accurate captions only for the clips */
         speedBoost?: boolean;
+        /** optional: slow zoom on the face (eyes) when an awkward silence hits */
+        faceZoom?: boolean;
         /** effects applied to every clip once they are found (from a template) */
         fx?: import('./presets').PresetFx;
     };
