@@ -6,6 +6,7 @@ import { chatSpikes, parseChat } from '../lib/chat';
 import { analyseClip, closeVideo, detectFacecam, openVideo } from '../lib/faces';
 import { applyFx } from '../lib/presets';
 import { makeFaceZooms, withFaceZooms } from '../lib/facezoom';
+import { loadStylePrefs } from '../lib/stylePrefs';
 import { cancelTranscription, cleanWords } from '../lib/localAsr';
 import { DEFAULT_BRAND, deleteProject, listProjects, loadBrand, saveBrand, saveProject } from '../lib/store';
 import type { Aspect, Brand, Clip, Project, StyleSettings } from '../lib/types';
@@ -62,7 +63,13 @@ export default function Studio() {
     useEffect(() => {
         // older projects may hold speech-model glitches (long repeat runs); clean them on load
         listProjects()
-            .then((ps) => setProjects(ps.map((p) => (p.transcript ? { ...p, transcript: { ...p.transcript, words: cleanWords(p.transcript.words) } } : p))))
+            .then((ps) => {
+                const loaded = ps.map((p) => (p.transcript ? { ...p, transcript: { ...p.transcript, words: cleanWords(p.transcript.words) } } : p));
+                // a project made before loading finished is kept
+                const made = projectsRef.current.filter((x) => !loaded.some((l) => l.id === x.id));
+                projectsRef.current = [...made, ...loaded];
+                setProjects(projectsRef.current);
+            })
             .catch(() => {});
         setBrandState(loadBrand());
         try {
@@ -82,12 +89,25 @@ export default function Studio() {
     };
 
     const update = useCallback((p: Project) => {
-        setProjects((ps) => {
-            const exists = ps.some((x) => x.id === p.id);
-            return exists ? ps.map((x) => (x.id === p.id ? p : x)) : [p, ...ps];
-        });
+        // keep the ref current straight away, so the next change (even in the same moment) builds on this one
+        const ps = projectsRef.current;
+        const next = ps.some((x) => x.id === p.id) ? ps.map((x) => (x.id === p.id ? p : x)) : [p, ...ps];
+        projectsRef.current = next;
+        setProjects(next);
         saveProject(p);
     }, []);
+    /**
+     * Change part of a project, on top of its newest version. Work that runs in the background
+     * (thumbnails, captions, face zoom...) must use this, so it never undoes what you change in
+     * the editor meanwhile. Does nothing if the project was deleted.
+     */
+    const patch = useCallback((id: string, change: (cur: Project) => Project): Project | undefined => {
+        const cur = projectsRef.current.find((x) => x.id === id);
+        if (!cur) return undefined;
+        const next = change(cur);
+        update(next);
+        return next;
+    }, [update]);
 
     const runTokens = useRef<Record<string, number>>({});
     const setStep = (id: string, label: string, ratio: number) => {
@@ -113,7 +133,11 @@ export default function Studio() {
         const token = (runTokens.current[project.id] ?? 0) + 1;
         runTokens.current[project.id] = token;
         const live = () => runTokens.current[project.id] === token;
-        const save = (x: Project) => live() && update(x);
+        // only the fields this job owns are written, on top of the newest saved version
+        const save = (fields: Partial<Project>) => {
+            p = { ...p, ...fields };
+            if (live()) patch(project.id, (cur) => ({ ...cur, ...fields }));
+        };
         const step = (label: string, r: number) => live() && setStep(project.id, label, r);
         let p = { ...project };
         const o = p.options;
@@ -133,8 +157,7 @@ export default function Studio() {
         }
         try {
             if (!p.transcript || retranscribe) {
-                p = { ...p, status: 'transcribing' };
-                save(p);
+                save({ status: 'transcribing' });
                 step('Loading video engine', 0.02);
                 // speed boost (optional): a quick first pass is enough to find the moments
                 const boost = !!o.speedBoost && (o.asr ?? 'local') === 'local' && !o.captionsOnly;
@@ -149,14 +172,12 @@ export default function Studio() {
                     { asr: o.asr ?? 'local', language: o.language ?? 'english', quality },
                     resume,
                     (state) => {
-                        p = { ...p, partial: { key, ...state } };
-                        save(p);
+                        save({ partial: { key, ...state } });
                     },
                     () => !live()
                 );
                 if (transcript.words.length === 0) throw new Error('No speech was found in this video. Check that the video language is set correctly.');
-                p = { ...p, transcript, partial: undefined };
-                save(p);
+                save({ transcript, partial: undefined });
             }
             if (o.captionsOnly) {
                 // captions only: one "clip" that is the whole video, opened straight in the editor
@@ -175,20 +196,17 @@ export default function Studio() {
                     keywords: [],
                     emojis: []
                 };
-                p = { ...p, clips: [whole], status: 'ready' };
-                save(p);
+                save({ clips: [whole], status: 'ready' });
                 if (live()) setView((v) => (v.name === 'project' && v.id === p.id ? { name: 'editor', id: p.id, clipId: 'whole' } : v));
                 return;
             }
             const picker = o.picker ?? 'laughs';
             if (picker === 'chat') {
                 // wait for the creator to paste Claude's answer (see ProjectView)
-                p = { ...p, status: 'awaiting-paste' };
-                save(p);
+                save({ status: 'awaiting-paste' });
                 return;
             }
-            p = { ...p, status: 'clipping' };
-            save(p);
+            save({ status: 'clipping' });
             let clips: Clip[];
             if (picker === 'laughs') {
                 step('Finding the biggest laughs', 0.55);
@@ -202,8 +220,7 @@ export default function Studio() {
             if (live()) await finish(p, clips, url);
         } catch (e) {
             if (!live()) return;
-            p = { ...p, status: 'error' };
-            save(p);
+            save({ status: 'error' });
             const msg = e instanceof Error ? e.message : String(e);
             setErrors((er) => ({ ...er, [p.id]: /FS error|ErrnoError/.test(msg) ? 'The video engine had a hiccup. Click “Continue” to try again.' : msg }));
         } finally {
@@ -217,50 +234,50 @@ export default function Studio() {
 
     /** reframe each clip around the speaker and grab thumbnails */
     async function finish(project: Project, found: Clip[], url: string) {
-        let p: Project = { ...project, status: 'clipping' };
+        let style = project.style;
+        let searched = false;
         // a layout with a facecam needs to know where the facecam is
-        const facecamLayouts = ['split', 'pip'];
-        if (facecamLayouts.includes(p.style.layout) && !p.style.facecam) {
-            setStep(p.id, 'Looking for the facecam', 0.66);
-            const fc = await detectFacecam(url, p.duration).catch(() => null);
+        if (['split', 'pip'].includes(style.layout) && !style.facecam) {
+            setStep(project.id, 'Looking for the facecam', 0.66);
+            const fc = await detectFacecam(url, project.duration).catch(() => null);
+            searched = true;
             // no facecam found: fall back to following the speaker instead of a wrong crop
-            p = { ...p, style: fc ? { ...p.style, facecam: fc } : { ...p.style, layout: 'auto' } };
+            style = fc ? { ...style, facecam: fc } : { ...style, layout: 'auto' };
         }
-        const tag = (p.options.topic ?? '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-        const events = projectEvents(p);
-        const words = p.transcript?.words ?? [];
+        const tag = (project.options.topic ?? '').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+        const events = projectEvents(project);
+        const words = project.transcript?.words ?? [];
         const clips = found.map((c) => {
             let n = tag && !c.hashtags.some((h) => h.replace('#', '').toLowerCase() === tag) ? { ...c, hashtags: [tag, ...c.hashtags] } : c;
-            if (p.options.fx) n = applyFx(n, p.options.fx, events, words);
+            if (project.options.fx) n = applyFx(n, project.options.fx, events, words);
             return n;
         });
-        p = { ...p, clips };
-        update(p);
-        const done = await reframe(p, url);
+        const found2 = style;
+        const p = patch(project.id, (cur) => ({ ...cur, status: 'clipping', clips, style: searched ? { ...cur.style, layout: found2.layout, facecam: found2.facecam } : cur.style }));
+        if (!p) return; // deleted meanwhile
+        await reframe(p, url);
         if (p.options.speedBoost && (p.options.asr ?? 'local') === 'local' && !p.options.captionsOnly) await recaption(p.id, 'clips');
-        if (p.options.faceZoom) await faceZoomAll(done, url);
+        if (p.options.faceZoom) await faceZoomAll(p.id, url);
     }
 
     /** optional: slow zoom on the eyes at awkward silences, in every clip (after the final captions) */
-    async function faceZoomAll(made: Project, url: string) {
-        const id = made.id;
-        // the saved copy may be newer (Speed boost redoes the captions), but only if it already has these clips
-        const saved = projectsRef.current.find((x) => x.id === id);
-        const same = saved && saved.clips.length === made.clips.length && saved.clips.every((c, i) => c.id === made.clips[i].id);
-        let p = same ? saved : made;
-        if (!p.transcript) return;
+    async function faceZoomAll(id: string, url: string) {
+        const start = projectsRef.current.find((x) => x.id === id);
+        if (!start?.transcript) return;
+        const ids = start.clips.map((c) => c.id);
         let video: HTMLVideoElement | null = null;
         try {
             video = await openVideo(url);
-            for (let i = 0; i < p.clips.length; i++) {
-                setStep(id, `Face zoom on awkward silences: clip ${i + 1} of ${p.clips.length}`, 0.9 + (0.1 * i) / p.clips.length);
-                const clip = p.clips[i];
-                if (!clip || !p.transcript) continue;
+            for (let i = 0; i < ids.length; i++) {
+                setStep(id, `Face zoom on awkward silences: clip ${i + 1} of ${ids.length}`, 0.9 + (0.1 * i) / ids.length);
+                // always read the newest version: the clip may have been edited (or deleted) meanwhile
+                const cur = projectsRef.current.find((x) => x.id === id);
+                const clip = cur?.clips.find((c) => c.id === ids[i]);
+                if (!cur?.transcript || !clip) continue;
                 try {
-                    const r = await makeFaceZooms(video, clip, p.transcript.words, p.transcript.energy, p.style, p.style.faceAim);
+                    const r = await makeFaceZooms(video, clip, cur.transcript.words, cur.transcript.energy, cur.style, cur.style.faceAim);
                     if (!r.total) continue;
-                    p = { ...p, clips: p.clips.map((c) => (c.id === clip.id ? { ...c, zooms: withFaceZooms(c, r.zooms) } : c)) };
-                    update(p);
+                    patch(id, (now) => ({ ...now, clips: now.clips.map((c) => (c.id === ids[i] ? { ...c, zooms: withFaceZooms(c, r.zooms) } : c)) }));
                 } catch {
                     /* optional: the clip still works without it */
                 }
@@ -274,20 +291,21 @@ export default function Studio() {
 
     /** thumbnails, and the speaker-following crop when the layout uses it. Optional: never blocks the clips. */
     async function reframe(project: Project, url: string) {
-        let p: Project = { ...project, status: 'clipping' };
-        const clips = [...p.clips];
+        const id = project.id;
+        const ids = project.clips.map((c) => c.id);
         // only "follow speaker" uses the face track; other layouts just need thumbnails (much faster)
-        const needTrack = p.style.layout === 'auto';
+        const needTrack = project.style.layout === 'auto';
         let video: HTMLVideoElement | null = null;
         try {
             video = await openVideo(url);
-            for (let i = 0; i < clips.length; i++) {
-                setStep(p.id, `${needTrack ? 'Reframing' : 'Making thumbnails for'} clip ${i + 1} of ${clips.length}`, 0.7 + (0.3 * i) / clips.length);
+            for (let i = 0; i < ids.length; i++) {
+                setStep(id, `${needTrack ? 'Reframing' : 'Making thumbnails for'} clip ${i + 1} of ${ids.length}`, 0.7 + (0.3 * i) / ids.length);
+                const clip = projectsRef.current.find((x) => x.id === id)?.clips.find((c) => c.id === ids[i]);
+                if (!clip) continue;
                 try {
-                    const res = await analyseClip(url, clips[i].start, clips[i].end, p.style.aspect, { video, track: needTrack, budgetMs: 30000 });
-                    clips[i] = { ...clips[i], track: res.track ?? clips[i].track, thumb: res.thumb };
-                    p = { ...p, clips: [...clips], thumb: p.thumb ?? res.thumb };
-                    update(p);
+                    const res = await analyseClip(url, clip.start, clip.end, project.style.aspect, { video, track: needTrack, budgetMs: 30000 });
+                    // only the thumbnail and the face track are written, on top of any edits made meanwhile
+                    patch(id, (cur) => ({ ...cur, thumb: cur.thumb ?? res.thumb, clips: cur.clips.map((c) => (c.id === ids[i] ? { ...c, track: res.track ?? c.track, thumb: res.thumb } : c)) }));
                 } catch {
                     /* reframing is optional; keep the clip centred */
                 }
@@ -297,9 +315,7 @@ export default function Studio() {
         } finally {
             if (video) closeVideo(video);
         }
-        p = { ...p, status: 'ready' };
-        update(p);
-        return p;
+        patch(id, (cur) => ({ ...cur, status: 'ready' }));
     }
 
     /** clips pasted back from a Claude chat */
@@ -309,7 +325,7 @@ export default function Studio() {
         if (!p) return;
         const clips = parseChatAnswer(answer, p.duration); // throws a readable error
         if (!vid) {
-            update({ ...p, clips, status: 'ready' });
+            patch(id, (cur) => ({ ...cur, clips, status: 'ready' }));
             return;
         }
         try {
@@ -339,6 +355,7 @@ export default function Studio() {
     async function makeProject(input: NewProjectInput): Promise<{ project: Project; file: File; url: string }> {
         const url = URL.createObjectURL(input.file);
         const meta = await readMeta(url);
+        const remembered = loadStylePrefs();
         const project: Project = {
             id: `p${Date.now().toString(36)}`,
             name: input.file.name.replace(/\.[^.]+$/, ''),
@@ -352,8 +369,11 @@ export default function Studio() {
             clips: [],
             style: {
                 ...DEFAULT_STYLE,
+                // your last choices (emojis, facecam box and height, position...) carry over
+                ...remembered,
                 template: input.template,
-                highlight: input.highlight,
+                // a colour you picked stays when you keep the same caption style
+                highlight: remembered.template === input.template && remembered.highlight ? remembered.highlight : input.highlight,
                 // a template's look (a saved preset keeps its own caption style and facecam box)
                 ...(input.preset?.style ?? {}),
                 aspect: input.keepShape ? closestAspect(meta.width, meta.height) : input.aspect,
@@ -392,18 +412,16 @@ export default function Studio() {
         const next = order[Math.min(order.length - 1, order.indexOf(cur) + 1)];
         cancelTranscription();
         await runPromises.current[id]?.catch(() => {});
-        const np: Project = { ...p, options: { ...p.options, asrQuality: next }, partial: undefined, transcript: undefined };
-        update(np);
-        run(np, vid.file, vid.url, true);
+        const np = patch(id, (now) => ({ ...now, options: { ...now.options, asrQuality: next }, partial: undefined, transcript: undefined }));
+        if (np) run(np, vid.file, vid.url, true);
     }
 
     function regenerate(id: string, options: Project['options']) {
         const p = projectsRef.current.find((x) => x.id === id);
         const vid = videos[id];
         if (!p || !vid) return;
-        const next = { ...p, options };
-        update(next);
-        run(next, vid.file, vid.url, !p.transcript);
+        const next = patch(id, (cur) => ({ ...cur, options }));
+        if (next) run(next, vid.file, vid.url, !p.transcript);
     }
 
     /** new captions for an existing project (fixed timing, Accurate model); clips and edits stay */
@@ -420,8 +438,7 @@ export default function Studio() {
                     ? await recaptionRanges(vid.file, p.transcript, clipRanges(p.clips, p.duration), engine.language, (label, r) => setStep(id, label, r))
                     : await transcribeVideo(vid.file, p.duration, accessCode, (label, r) => setStep(id, label, r), engine);
             if (transcript.words.length === 0) throw new Error('No speech was found. Check that the video language is set correctly.');
-            const cur = projectsRef.current.find((x) => x.id === id) ?? p;
-            update({ ...cur, transcript, captionShift: 0, partial: undefined, options: scope === 'all' ? { ...cur.options, asrQuality: engine.quality } : cur.options });
+            patch(id, (cur) => ({ ...cur, transcript, captionShift: 0, partial: undefined, options: scope === 'all' ? { ...cur.options, asrQuality: engine.quality } : cur.options }));
         } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
             setErrors((er) => ({ ...er, [id]: `Redoing captions failed: ${msg}` }));
@@ -436,7 +453,9 @@ export default function Studio() {
 
     async function removeProject(id: string) {
         await deleteProject(id);
-        setProjects((ps) => ps.filter((p) => p.id !== id));
+        runTokens.current[id] = (runTokens.current[id] ?? 0) + 1; // stop its background work
+        projectsRef.current = projectsRef.current.filter((p) => p.id !== id);
+        setProjects(projectsRef.current);
         setView({ name: 'home' });
     }
 

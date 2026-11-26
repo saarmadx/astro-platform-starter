@@ -33,6 +33,18 @@ export type CaptionTemplate = {
     boxText?: string;
     /** each new caption appears this much bigger and settles to normal size (e.g. 1.05 = 105% -> 100%) */
     settle?: number;
+    /** each caption is tilted this many degrees, alternating left and right (sticker look) */
+    tilt?: number;
+    /** red and cyan copies just beside the text, like a glitchy screen */
+    rgbSplit?: boolean;
+    /** words are only outlined; the spoken word fills in */
+    hollow?: boolean;
+    /** a solid offset copy behind the text (3D block letters), in this colour */
+    blockShadow?: string;
+    /** the line box is a strip of tape in this colour (lineBox must be on) */
+    tape?: string;
+    /** always this many words at a time (overrides "Words on screen") */
+    perLine?: number;
     defaultHighlight: string;
 };
 
@@ -53,6 +65,14 @@ export const TEMPLATES: CaptionTemplate[] = [
     { id: 'bounce', name: 'Bounce', font: 'Rubik Black', cssFont: 'CapRubik', size: 0.082, uppercase: true, color: '#ffffff', outline: 0.15, shadow: true, active: 'color', pop: true, activeScale: 1.35, lineBox: false, defaultHighlight: '#ffe600' },
     { id: 'settle', name: 'Settle', font: 'Montserrat ExtraBold', cssFont: 'CapMontserrat', size: 0.08, uppercase: true, color: '#ffffff', outline: 0.14, shadow: true, active: 'color', pop: false, lineBox: false, settle: 1.05, defaultHighlight: '#ffe600' },
     { id: 'karaoke', name: 'Karaoke', font: 'Montserrat ExtraBold', cssFont: 'CapMontserrat', size: 0.075, uppercase: true, color: '#9aa0aa', outline: 0.12, shadow: false, active: 'color', pop: false, lineBox: false, fillSpoken: true, defaultHighlight: '#ffffff' },
+    // ---- ClipHeist originals ----
+    { id: 'glitch', name: 'Glitch', font: 'Rubik Black', cssFont: 'CapRubik', size: 0.082, uppercase: true, color: '#ffffff', outline: 0.1, shadow: false, active: 'color', pop: true, activeScale: 1.18, lineBox: false, rgbSplit: true, defaultHighlight: '#2ee6d6' },
+    { id: 'sticker', name: 'Sticker', font: 'Luckiest Guy', cssFont: 'CapLuckiest', size: 0.09, uppercase: true, color: '#111111', outline: 0.2, outlineColor: '#ffffff', shadow: true, active: 'color', pop: true, activeScale: 1.2, lineBox: false, tilt: 4, defaultHighlight: '#ff4d6d' },
+    { id: 'hollow', name: 'Outline', font: 'Anton', cssFont: 'CapAnton', size: 0.105, uppercase: true, color: '#ffffff', outline: 0.05, outlineColor: '#ffffff', shadow: false, active: 'color', pop: true, activeScale: 1.12, lineBox: false, hollow: true, defaultHighlight: '#ffd60a' },
+    { id: 'block3d', name: '3D Block', font: 'Bungee', cssFont: 'CapBungee', size: 0.078, uppercase: true, color: '#ffffff', outline: 0.1, shadow: false, active: 'color', pop: true, lineBox: false, blockShadow: '#7c5cff', defaultHighlight: '#ffd60a' },
+    { id: 'slam', name: 'Slam', font: 'Anton', cssFont: 'CapAnton', size: 0.15, uppercase: true, color: '#ffffff', outline: 0.1, shadow: true, active: 'none', pop: false, lineBox: false, settle: 1.3, perLine: 1, defaultHighlight: '#ffffff' },
+    { id: 'vhs', name: 'VHS', font: 'Press Start 2P', cssFont: 'CapPixel', size: 0.052, uppercase: true, color: '#ffffff', outline: 0.14, shadow: false, active: 'color', pop: false, lineBox: false, rgbSplit: true, defaultHighlight: '#ff3df2' },
+    { id: 'tape', name: 'Tape', font: 'Bebas Neue', cssFont: 'CapBebas', size: 0.1, uppercase: true, color: '#111111', outline: 0, shadow: false, active: 'color', pop: false, lineBox: true, tape: '#ffe600', tilt: 2, defaultHighlight: '#e0004d' },
     { id: 'subtitle', name: 'Subtitle', font: 'Poppins ExtraBold', cssFont: 'CapPoppins', size: 0.058, uppercase: false, color: '#ffffff', outline: 0, shadow: false, active: 'none', pop: false, lineBox: true, defaultHighlight: '#ffffff' },
     { id: 'minimal', name: 'Minimal', font: 'Montserrat ExtraBold', cssFont: 'CapMontserrat', size: 0.06, uppercase: false, color: '#ffffff', outline: 0.06, shadow: true, active: 'none', pop: false, lineBox: false, defaultHighlight: '#ffffff' },
     { id: 'none', name: 'No captions', font: 'Montserrat ExtraBold', cssFont: 'CapMontserrat', size: 0.07, uppercase: false, color: '#ffffff', outline: 0, shadow: false, active: 'none', pop: false, lineBox: false, defaultHighlight: '#ffffff' }
@@ -79,3 +99,27 @@ export function getTemplate(id: string): CaptionTemplate {
 }
 
 export const DEFAULT_SPEAKER_COLORS = ['#ffffff', '#4dd2ff', '#ffd60a', '#ff7ab6'];
+
+/** How many words show at once: the style's own number if it has one, else your setting. */
+export function perLine(style: { template: string; wordsPerLine: number }): number {
+    return getTemplate(style.template).perLine ?? style.wordsPerLine;
+}
+
+/**
+ * The burned-in captions (libass) size a font by its full line height (OS/2 winAscent + winDescent),
+ * while the preview (canvas) sizes it by its em. Multiplying the size by this makes the exported
+ * text exactly as big as in the preview. Numbers read from the font files.
+ */
+const ASS_SIZE: Record<string, number> = {
+    Anton: 3550 / 2048,
+    Bangers: 1757 / 1000,
+    'Bebas Neue': 1300 / 1000,
+    Bungee: 2574 / 1000,
+    'Luckiest Guy': 2510 / 2048,
+    'Montserrat ExtraBold': 1562 / 1000,
+    'Permanent Marker': 1461 / 1024,
+    'Poppins ExtraBold': 1762 / 1000,
+    'Press Start 2P': 1374 / 1000,
+    'Rubik Black': 1532 / 1000
+};
+export const assFontScale = (font: string) => ASS_SIZE[font] ?? 1;

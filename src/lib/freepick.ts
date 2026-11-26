@@ -25,8 +25,18 @@ export function parseChatAnswer(text: string, duration: number): Clip[] {
     }
     if (!Array.isArray(data)) throw new Error('Expected a list of clips.');
     const num = (v: unknown, d: number) => (typeof v === 'number' && isFinite(v) ? v : d);
+    // times may come as numbers, "83.5", "1:23" or "1:02:03"
+    const time = (v: unknown): number | null => {
+        if (typeof v === 'number') return isFinite(v) ? v : null;
+        if (typeof v !== 'string') return null;
+        const t = v.trim().replace(/s$/i, '');
+        if (/^\d+(\.\d+)?$/.test(t)) return parseFloat(t);
+        const m = t.match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/);
+        return m ? (+(m[1] ?? 0)) * 3600 + +m[2] * 60 + +m[3] : null;
+    };
     const clips = data
-        .filter((c): c is Record<string, any> => !!c && typeof c === 'object' && typeof c.start === 'number' && typeof c.end === 'number')
+        .filter((c): c is Record<string, any> => !!c && typeof c === 'object' && time(c.start) !== null && time(c.end) !== null)
+        .map((c): Record<string, any> => ({ ...c, start: time(c.start)!, end: time(c.end)! }))
         .map((c, i) => {
             const score = Math.round(Math.max(0, Math.min(100, num(c.score, 60))));
             const sub = c.subscores ?? {};

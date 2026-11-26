@@ -9,7 +9,7 @@ import { playSfx, SFX_KINDS } from '../lib/sfx';
 import { analyseClip, closeVideo, detectFacecam, openVideo } from '../lib/faces';
 import { makeFaceZooms, withFaceZooms } from '../lib/facezoom';
 import { outputSize } from '../lib/geometry';
-import { DEFAULT_SPEAKER_COLORS, TEMPLATES, TITLE_FONT } from '../lib/templates';
+import { DEFAULT_SPEAKER_COLORS, getTemplate, perLine, TEMPLATES, TITLE_FONT } from '../lib/templates';
 import { ensureSegs, outputDuration, removeRanges, segmentsOf, silenceCuts, skipCut, toOutputClamped, toSource, withSegs } from '../lib/timeline';
 import { titleIdeas } from '../lib/titles';
 import { fixPrompt, parseFixes, replacePhrase } from '../lib/fixwords';
@@ -17,6 +17,7 @@ import type { Aspect, Brand, CaptionPosition, Clip, Layout, Project, SfxKind, St
 import { renderClip } from '../lib/video';
 import { enqueueExport, useExportJobs } from '../lib/exportQueue';
 import { exportChecks } from '../lib/exportChecks';
+import { saveStylePrefs } from '../lib/stylePrefs';
 import { DEFAULT_EXPORT, loadExportPrefs, saveExportPrefs, type ExportPrefs } from '../lib/exportPrefs';
 import { applyFx, currentFx, loadPresets, savePresets, type Preset } from '../lib/presets';
 import { Segmented } from './Home';
@@ -116,7 +117,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
     }, [brand.logo]);
 
     const groups = useMemo(
-        () => (clip ? groupWords(displayWords(words, clip, style, project.speakers, false), style.wordsPerLine) : []),
+        () => (clip ? groupWords(displayWords(words, clip, style, project.speakers, false), perLine(style)) : []),
         [words, clip?.start, clip?.end, clip?.cuts, clip?.segs, clip?.keywords, style, project.speakers]
     );
     const events = useMemo(() => projectEvents(project), [project.transcript, project.chat]);
@@ -238,7 +239,17 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             raf = requestAnimationFrame(loop);
         };
         raf = requestAnimationFrame(loop);
-        return () => cancelAnimationFrame(raf);
+        return () => {
+            cancelAnimationFrame(raf);
+            // leaving the editor mid-bleep must not leave the beep sounding
+            try {
+                beepRef.current?.osc.stop();
+                beepRef.current?.ctx.close();
+            } catch {
+                /* already stopped */
+            }
+            beepRef.current = null;
+        };
     }, []);
 
     // older clips (cut list) are turned into separate parts once, when opened
@@ -265,7 +276,15 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             const v = document.createElement('video');
             v.muted = true;
             v.src = video.url;
-            await new Promise((r) => (v.onloadeddata = r));
+            const ok = await new Promise<boolean>((r) => {
+                v.onloadeddata = () => r(true);
+                v.onerror = () => r(false);
+                setTimeout(() => r(false), 20000);
+            });
+            if (!ok) {
+                v.removeAttribute('src');
+                return;
+            }
             const from = Math.max(0, clip.start - 10);
             const to = Math.min(project.duration, clip.end + 10);
             const step = Math.max(0.75, (to - from) / 80);
@@ -275,7 +294,11 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
             const out: { t: number; url: string }[] = [];
             for (let t = from; t < to && !cancelled; t += step) {
                 await new Promise<void>((r) => {
-                    v.onseeked = () => r();
+                    const timer = setTimeout(r, 3000); // a seek that never finishes doesn't stop the strip
+                    v.onseeked = () => {
+                        clearTimeout(timer);
+                        r();
+                    };
                     v.currentTime = t;
                 });
                 c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
@@ -300,6 +323,8 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
 
     // ---------- updates ----------
     const commit = (p: Project) => {
+        // caption/layout changes are remembered for the next video too
+        if (p.style !== latest.current.style) saveStylePrefs(p.style);
         latest.current = p;
         onChange(p);
     };
@@ -651,7 +676,7 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                     <Field label="Position">
                                         <Segmented value={style.position} onChange={(v) => setStyle({ position: v as CaptionPosition })} items={[{ id: 'top', label: 'Top' }, { id: 'middle', label: 'Middle' }, { id: 'bottom', label: 'Bottom' }]} />
                                     </Field>
-                                    <Field label={`Words on screen: ${style.wordsPerLine}`}>
+                                    <Field label={getTemplate(style.template).perLine ? `Words on screen: ${perLine(style)} (set by this style)` : `Words on screen: ${style.wordsPerLine}`}>
                                         <input type="range" min={1} max={6} value={style.wordsPerLine} onChange={(e) => setStyle({ wordsPerLine: +e.target.value })} className="w-full accent-[var(--color-accent)]" />
                                     </Field>
                                     <Field label="Swear words">
@@ -707,7 +732,11 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                             <p className="text-sm font-semibold">Set every part at once</p>
                                             <p className="text-xs text-white/50">This clip is cut into {segmentsOf(clip).length} parts. To change only one, click it on the V1 track instead.</p>
                                             <Segmented
-                                                value=""
+                                                value={(() => {
+                                                    // show the layout every part has (none lit when they differ)
+                                                    const ls = segmentsOf(clip).map((sg) => sg.layout ?? style.layout);
+                                                    return ls.every((l) => l === ls[0]) ? ls[0] : '';
+                                                })()}
                                                 onChange={(v) => editClip(withSegs(clip, segmentsOf(clip).map((sg) => ({ ...sg, layout: v as Layout }))))}
                                                 items={[{ id: 'auto', label: 'Follow' }, { id: 'split', label: 'Facecam' }, { id: 'pip', label: 'PiP' }, { id: 'manual', label: 'Fixed' }, { id: 'fit', label: 'Fit' }]}
                                             />
@@ -737,6 +766,12 @@ export default function Editor({ project, clipId, video, brand, onChange, onBack
                                         <Field label={`Facecam height: ${Math.round((style.splitRatio ?? 0.4) * 100)}%`}>
                                             <input type="range" min={0.25} max={0.55} step={0.01} value={style.splitRatio ?? 0.4} onChange={(e) => setStyle({ splitRatio: +e.target.value })} className="w-full accent-[var(--color-accent)]" />
                                         </Field>
+                                        {segmentsOf(clip).some((sg) => sg.splitRatio !== undefined) && (
+                                            <div className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.04] px-3 py-2 text-xs text-muted">
+                                                <span>{segmentsOf(clip).filter((sg) => sg.splitRatio !== undefined).length} part(s) have their own facecam height, so this slider doesn’t change them.</span>
+                                                <button className="tl-btn shrink-0" onClick={() => editClip(withSegs(clip, segmentsOf(clip).map((sg) => ({ ...sg, splitRatio: undefined }))))}>Use this height for all</button>
+                                            </div>
+                                        )}
                                         <Field label="Gameplay position">
                                             <input type="range" min={0} max={1} step={0.01} value={style.cropX} onChange={(e) => setStyle({ cropX: +e.target.value })} className="w-full accent-[var(--color-accent)]" />
                                         </Field>

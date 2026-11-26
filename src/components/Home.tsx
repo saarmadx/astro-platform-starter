@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { TEMPLATES } from '../lib/templates';
+import { loadStylePrefs } from '../lib/stylePrefs';
 import { LANGUAGES } from '../lib/localAsr';
 import type { Aspect, AsrEngine, AsrQuality, ContentMode, Picker, Project } from '../lib/types';
 import { TemplateSwatch } from './ui';
@@ -86,6 +87,11 @@ export default function Home({ projects, running, onCreate, onOpen, onOpenClip, 
     const [maxClips, setMaxClips] = useState(10);
     const [aspect, setAspect] = useState<Aspect>('9:16');
     const [template, setTemplate] = useState('punch');
+    // start on the caption style you used last time
+    useEffect(() => {
+        const t = loadStylePrefs().template;
+        if (t && t !== 'none' && TEMPLATES.some((x) => x.id === t)) setTemplate(t);
+    }, []);
     const [topic, setTopic] = useState('');
     const [mode, setMode] = useState<ContentMode>('funny');
     const [picker, setPicker] = useState<Picker>('chat');

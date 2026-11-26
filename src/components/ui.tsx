@@ -17,17 +17,28 @@ export function scoreTone(score: number) {
 /** A small tile showing what a caption template looks like. */
 export function TemplateSwatch({ template, highlight, selected, onClick }: { template: CaptionTemplate; highlight: string; selected: boolean; onClick: () => void }) {
     const word = (w: string) => (template.uppercase ? w.toUpperCase() : w);
-    const stroke = template.outline ? `${Math.max(1, template.outline * 12)}px #000` : undefined;
-    const base: React.CSSProperties = { fontFamily: template.cssFont, WebkitTextStroke: stroke, paintOrder: 'stroke fill', color: template.color };
+    const stroke = template.outline ? `${Math.max(1, template.outline * 12)}px ${template.outlineColor ?? '#000'}` : undefined;
+    const shadows = [template.rgbSplit ? '-2px 0 rgba(255,32,80,.7), 2px 0 rgba(32,224,255,.7)' : '', template.blockShadow ? `2px 2px 0 ${template.blockShadow}` : '', template.glow ? `0 0 6px ${template.glow}` : ''].filter(Boolean).join(', ');
+    const base: React.CSSProperties = {
+        fontFamily: template.cssFont,
+        WebkitTextStroke: template.hollow ? '1px #fff' : stroke,
+        paintOrder: 'stroke fill',
+        color: template.hollow ? 'transparent' : template.color,
+        textShadow: shadows || undefined,
+        display: 'inline-block',
+        transform: template.tilt ? `rotate(${-template.tilt}deg)` : undefined,
+        background: template.tape,
+        padding: template.tape ? '1px 5px' : undefined
+    };
     const activeStyle: React.CSSProperties =
-        template.active === 'color' ? { color: highlight } : template.active === 'box' ? { background: highlight, borderRadius: 6, padding: '0 4px', WebkitTextStroke: undefined } : {};
+        template.active === 'color' ? { color: highlight, ...(template.hollow ? { WebkitTextStroke: '1px #000' } : {}) } : template.active === 'box' ? { background: highlight, borderRadius: 6, padding: '0 4px', WebkitTextStroke: undefined } : {};
     return (
         <button onClick={onClick} className={`flex h-16 flex-col items-center justify-center gap-1 rounded-xl border bg-gradient-to-b from-slate-700/60 to-slate-900/80 px-1 ${selected ? 'border-accent ring-1 ring-accent' : 'border-white/10 hover:border-white/30'}`}>
             {template.id === 'none' ? (
                 <span className="text-xs text-muted">No captions</span>
             ) : (
-                <span className={`text-[15px] leading-none ${template.lineBox ? 'rounded bg-black/70 px-1.5 py-1' : ''}`} style={base}>
-                    {word('so')} <span style={activeStyle}>{word('good')}</span>
+                <span className={`text-[15px] leading-none ${template.lineBox && !template.tape ? 'rounded bg-black/70 px-1.5 py-1' : ''}`} style={base}>
+                    {template.perLine === 1 ? <span>{word('good')}</span> : <>{word('so')} <span style={activeStyle}>{word('good')}</span></>}
                 </span>
             )}
             <span className="text-[10px] font-medium text-muted">{template.name}</span>

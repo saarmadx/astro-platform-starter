@@ -6,7 +6,7 @@ import { drawFreezeText, drawHookTitleText, drawReplayBadge, drawSticker, emojiP
 import { allShakes, allSfx, allZooms, replayLength } from './fx';
 import { sfxWav } from './sfx';
 import { coverBox, cropPath, cropWindow, outputSize, posAt, type Box } from './geometry';
-import { FONT_FILES, getTemplate } from './templates';
+import { FONT_FILES, getTemplate, perLine } from './templates';
 import { keptSegments, outputDuration, segmentsOf, styleAt, toOutput, toOutputClamped, toSource } from './timeline';
 import type { Brand, Clip, Project, StyleSettings, Word, Zoom } from './types';
 
@@ -287,7 +287,7 @@ async function prepareAssets(o: RenderOptions, W: number, H: number): Promise<As
     if (replayLength(clip) > 0) files.push({ path: '/replay.png', data: await textOverlayPng(W, H, (ctx) => drawReplayBadge(ctx)) });
     for (let i = 0; i < (clip.stickers ?? []).length; i++) files.push({ path: `/sticker_${i}.png`, data: await textOverlayPng(W, H, (ctx) => drawSticker(ctx, clip.stickers![i])) });
     if (style.emojis && tpl.id !== 'none') {
-        const groups = groupWords(displayWords(o.words, clip, style, o.speakers, true), style.wordsPerLine);
+        const groups = groupWords(displayWords(o.words, clip, style, o.speakers, true), perLine(style));
         const events = emojiEvents(clip, groups).slice(0, 10);
         const es = Math.round(captionSize(tpl, style, W) * 1.6);
         for (let i = 0; i < events.length; i++) {
@@ -569,7 +569,7 @@ function videoPartCommand(o: RenderOptions, input: string, ws: number, we: numbe
         overlayImage(`/sticker_${i}.png`, `between(t,${a.toFixed(2)},${b.toFixed(2)})`, `vst${i}`);
     });
     if (style.emojis && tpl.id !== 'none') {
-        const groups = groupWords(displayWords(o.words, clip, style, o.speakers, true), style.wordsPerLine);
+        const groups = groupWords(displayWords(o.words, clip, style, o.speakers, true), perLine(style));
         const events = emojiEvents(clip, groups).slice(0, 10);
         const size = Math.round(captionSize(tpl, style, W));
         const es = Math.round(size * 1.6);
@@ -706,7 +706,16 @@ function audioCommand(o: RenderOptions, input: string, out: string, sfxFiles: { 
  * split), zooms, shakes, captions, title, stickers, emoji, logo, progress bar, replay, freeze,
  * bleeps, sound effects and music. The clip is rendered as pieces in parallel and joined.
  */
-export async function renderClip(o: RenderOptions): Promise<Blob> {
+// one render at a time, whoever asks (export queue, compilation...): renders share the engines
+// and the frame rate setting, so two at once would spoil each other
+let renderChain: Promise<unknown> = Promise.resolve();
+export function renderClip(o: RenderOptions): Promise<Blob> {
+    const run = renderChain.then(() => renderClipNow(o));
+    renderChain = run.catch(() => undefined);
+    return run;
+}
+
+async function renderClipNow(o: RenderOptions): Promise<Blob> {
     const { clip, style } = o;
     const { W, H } = outputSize(style.aspect, o.quality);
     if (keptSegments(clip).length === 0) throw new Error('Everything in this clip is cut. Restore part of it in the timeline.');

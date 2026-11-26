@@ -1,5 +1,5 @@
 import { censorText } from './censor';
-import { getTemplate, TITLE_FONT, DEFAULT_SPEAKER_COLORS, type CaptionTemplate } from './templates';
+import { assFontScale, getTemplate, perLine, TITLE_FONT, DEFAULT_SPEAKER_COLORS, type CaptionTemplate } from './templates';
 import { keptSegments, toOutput, toOutputClamped } from './timeline';
 import type { Clip, StyleSettings, Word } from './types';
 
@@ -140,7 +140,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,${t.font},${size},${assColor(t.color)},${assColor(t.color)},${outlineCol},${t.lineBox ? '&H55000000' : '&H80000000'},0,0,0,0,100,100,0,0,${t.lineBox ? 3 : 1},${t.lineBox ? Math.round(size * 0.25) : outline},${t.shadow ? Math.max(1, Math.round(size * 0.05)) : 0},5,${marginLR},${marginLR},0,1
+Style: Cap,${t.font},${Math.round(size * assFontScale(t.font))},${assColor(t.color)},${assColor(t.color)},${t.tape ? assColor(t.tape) : outlineCol},${t.lineBox ? '&H55000000' : '&H80000000'},0,0,0,0,100,100,0,0,${t.lineBox ? 3 : 1},${t.lineBox ? Math.round(size * 0.25) : outline},${t.shadow ? Math.max(1, Math.round(size * 0.05)) : 0},5,${marginLR},${marginLR},0,1
 Style: Title,${TITLE_FONT.font},${titleSize},&H00000000,&H00000000,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,${Math.round(titleSize * 0.35)},0,8,${Math.round(W * 0.1)},${Math.round(W * 0.1)},${Math.round(H * 0.07)},1
 Style: Freeze,${TITLE_FONT.font},${Math.round(titleSize * 1.15)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,${Math.round(titleSize * 0.14)},2,5,${Math.round(W * 0.1)},${Math.round(W * 0.1)},0,1
 
@@ -155,7 +155,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if (t.id !== 'none' && lang !== 'original' && clip.translation) {
         const segs = keptSegments(clip);
         const below = lang === 'both';
-        const fs = Math.round(size * (below ? 0.62 : 1));
+        const fsPx = size * (below ? 0.62 : 1);
+        const fs = Math.round(fsPx * assFontScale(t.font));
         const ty = below ? y + Math.round(size * 1.25) : y;
         for (const l of clip.translation.lines) {
             const a = toOutputClamped(clip, l.start, segs);
@@ -163,49 +164,66 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if (b - a < 0.05) continue;
             const text = clean(t.uppercase ? l.text.toUpperCase() : l.text);
             const col = below ? `\\c${assColor(style.highlight)}` : '';
-            lines.push(`Dialogue: 2,${assTime(a)},${assTime(b)},Cap,,0,0,0,,{\\an${below ? 8 : 5}\\pos(${Math.round(W / 2)},${ty})\\fs${fs}${col}\\bord${Math.max(2, Math.round(fs * 0.12))}}${text}`);
+            lines.push(`Dialogue: 2,${assTime(a)},${assTime(b)},Cap,,0,0,0,,{\\an${below ? 8 : 5}\\pos(${Math.round(W / 2)},${ty})\\fs${fs}${col}\\bord${Math.max(2, Math.round(fsPx * 0.12))}}${text}`);
         }
     }
 
     if (t.id !== 'none' && lang !== 'translated') {
         const hl = assColor(style.highlight);
         const dw = displayWords(words, clip, style, speakers, true);
-        const groups = groupWords(dw, style.wordsPerLine);
+        const groups = groupWords(dw, perLine(style));
         const times = groupTimes(groups);
         const pos = `\\an5\\pos(${Math.round(W / 2)},${y})`;
         const scaleUp = Math.round((t.activeScale ?? 1.15) * 100);
 
         groups.forEach((group, gi) => {
+            // tags every word of this caption gets (a \\r after a tagged word resets to the plain style)
+            const tilt = t.tilt ? `\\frz${gi % 2 ? -t.tilt : t.tilt}` : '';
+            const block = t.blockShadow ? `\\shad${Math.max(2, Math.round(size * 0.08))}\\4c${assColor(t.blockShadow)}\\4a&H00&` : '';
             // one event per spoken word so the highlight moves word by word
             const spans = group.map((w, wi) => ({ from: wi === 0 ? times[gi].start : w.start, to: wi + 1 < group.length ? group[wi + 1].start : times[gi].end }));
             spans.forEach((span, wi) => {
                 if (span.to <= span.from) return;
-                const text = group
-                    .map((w, i) => {
-                        const s = clean(displayText(t, w));
-                        const active = i === wi && t.active !== 'none';
-                        const spoken = t.fillSpoken && i <= wi;
-                        let tags = '';
-                        if (t.reveal && i > wi) tags += '\\alpha&HFF&';
-                        if (w.color !== t.color) tags += `\\c${assColor(w.color)}`;
-                        if ((active && t.active === 'color') || spoken || (w.kw && !(active && t.active === 'box'))) tags += `\\c${hl}`;
-                        if (active && t.active === 'box') tags += `\\3c${hl}\\bord${Math.round(size * 0.28)}\\shad0${t.boxText ? `\\c${assColor(t.boxText)}` : ''}`;
-                        if (active && t.active === 'underline') tags += `\\u1\\c${hl}`;
-                        if (active && t.pop) tags += `\\fscx${scaleUp}\\fscy${scaleUp}\\t(0,110,\\fscx100\\fscy100)`;
-                        else if (active && t.activeScale) tags += `\\fscx${scaleUp}\\fscy${scaleUp}`;
-                        else if (w.kw && !active) tags += `\\fscx108\\fscy108`;
-                        // settle: every word of a new caption starts bigger and shrinks to normal together
-                        if (t.settle && wi === 0) {
-                            const big = Math.round(t.settle * 100);
-                            tags = `\\fscx${big}\\fscy${big}\\t(0,150,\\fscx100\\fscy100)` + tags;
-                        }
-                        return tags ? `{${tags}}${s}{\\r}` : s;
-                    })
-                    .join(' ');
+                // copy = the red/cyan glitch copies: only size changes and hidden words, no colours
+                const build = (copy: boolean) =>
+                    group
+                        .map((w, i) => {
+                            const s = clean(displayText(t, w));
+                            const active = i === wi && t.active !== 'none';
+                            const spoken = t.fillSpoken && i <= wi;
+                            const lit = (active && t.active === 'color') || spoken || (w.kw && !(active && t.active === 'box'));
+                            let tags = copy ? '' : tilt + block;
+                            if (t.reveal && i > wi) tags += '\\alpha&HFF&';
+                            if (!copy) {
+                                if (w.color !== t.color) tags += `\\c${assColor(w.color)}`;
+                                if (lit) tags += `\\c${hl}`;
+                                if (t.hollow) tags += lit || active ? `\\1a&H00&\\3c&H000000&` : `\\1a&HFF&\\3c${assColor(w.color)}`;
+                                if (active && t.active === 'box') tags += `\\3c${hl}\\bord${Math.round(size * 0.28)}\\shad0${t.boxText ? `\\c${assColor(t.boxText)}` : ''}`;
+                                if (active && t.active === 'underline') tags += `\\u1\\c${hl}`;
+                            }
+                            if (active && t.pop) tags += `\\fscx${scaleUp}\\fscy${scaleUp}\\t(0,110,\\fscx100\\fscy100)`;
+                            else if (active && t.activeScale) tags += `\\fscx${scaleUp}\\fscy${scaleUp}`;
+                            else if (w.kw && !active) tags += `\\fscx108\\fscy108`;
+                            // settle: every word of a new caption starts bigger and shrinks to normal together
+                            if (t.settle && wi === 0) {
+                                const big = Math.round(t.settle * 100);
+                                tags = `\\fscx${big}\\fscy${big}\\t(0,150,\\fscx100\\fscy100)` + tags;
+                            }
+                            if (copy) return tags ? `{${tags}}${s}{\\fscx100\\fscy100\\alpha&H50&}` : s;
+                            return tags ? `{${tags}}${s}{\\r}` : s;
+                        })
+                        .join(' ');
+                const text = build(false);
+                if (t.rgbSplit) {
+                    const off = Math.max(2, Math.round(size * 0.06));
+                    for (const [dx, col] of [[-off, '#ff2050'], [off, '#20e0ff']] as const) {
+                        lines.push(`Dialogue: 0,${assTime(span.from)},${assTime(span.to)},Cap,,0,0,0,,{\\an5\\pos(${Math.round(W / 2) + dx},${y})${tilt}\\c${assColor(col)}\\alpha&H50&\\bord0\\shad0}${build(true)}`);
+                    }
+                }
                 if (t.glow) {
                     lines.push(`Dialogue: 0,${assTime(span.from)},${assTime(span.to)},Cap,,0,0,0,,{${pos}\\bord${Math.round(size * 0.18)}\\3c${assColor(t.glow)}\\blur${Math.round(size * 0.15)}\\shad0}${text.replace(/\\3c&H[0-9A-F]+&/g, '')}`);
                 }
-                lines.push(`Dialogue: 1,${assTime(span.from)},${assTime(span.to)},Cap,,0,0,0,,{${pos}}${text}`);
+                lines.push(`Dialogue: 1,${assTime(span.from)},${assTime(span.to)},Cap,,0,0,0,,{${pos}${tilt}${block}}${text}`);
             });
         });
     }
@@ -224,7 +242,7 @@ function srtTime(t: number) {
 }
 
 export function buildSrt(words: Word[], clip: Clip, style: StyleSettings, speakers?: { t: number; speaker: number }[]): string {
-    const groups = groupWords(displayWords(words, clip, style, speakers, true), style.wordsPerLine);
+    const groups = groupWords(displayWords(words, clip, style, speakers, true), perLine(style));
     const times = groupTimes(groups);
     return groups.map((g, i) => `${i + 1}\n${srtTime(times[i].start)} --> ${srtTime(times[i].end)}\n${g.map((w) => w.text).join(' ')}\n`).join('\n');
 }

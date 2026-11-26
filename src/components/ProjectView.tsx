@@ -7,11 +7,11 @@ import { chatPrompt, splitForChat } from '../lib/prompts';
 import { displayWords, groupWords } from '../lib/captions';
 import { drawScene } from '../lib/draw';
 import { outputSize } from '../lib/geometry';
-import { skipCut } from '../lib/timeline';
+import { outputDuration, skipCut } from '../lib/timeline';
 import { joinVideos, renderCard, renderClip } from '../lib/video';
 import { chatSpikes, parseChat } from '../lib/chat';
 import { textOverlayPng, wrap } from '../lib/draw';
-import { TITLE_FONT } from '../lib/templates';
+import { perLine, TITLE_FONT } from '../lib/templates';
 import type { Brand, ContentMode, Picker, Project } from '../lib/types';
 import { MODES, PICKERS } from './Home';
 import type { LoadedVideo } from './Studio';
@@ -256,7 +256,7 @@ export default function ProjectView({ project, video, progress, error, brand, on
                         <div className={`relative overflow-hidden bg-black ${project.style.aspect === '16:9' ? 'aspect-video' : project.style.aspect === '1:1' ? 'aspect-square' : 'aspect-[9/12]'}`}>
                             {c.thumb ? <img src={c.thumb} alt="" className="h-full w-full object-cover transition group-hover:scale-105" /> : <div className="h-full w-full animate-pulse bg-white/5" />}
                             <span className={`absolute top-3 left-3 rounded-lg px-2 py-1 text-sm font-extrabold ${scoreTone(c.score)}`}>{c.score}</span>
-                            <span className="absolute right-3 bottom-3 rounded-md bg-black/70 px-1.5 py-0.5 text-xs font-semibold tabular-nums">{fmt(c.end - c.start)}</span>
+                            <span className="absolute right-3 bottom-3 rounded-md bg-black/70 px-1.5 py-0.5 text-xs font-semibold tabular-nums">{fmt(outputDuration(c))}</span>
                             <span className="absolute bottom-3 left-3 rounded-md bg-black/70 px-1.5 py-0.5 text-xs text-white/80">#{i + 1}</span>
                             {c.category && <span className="absolute top-3 right-3 rounded-md bg-black/70 px-2 py-1 text-xs font-semibold">{c.category}</span>}
                         </div>
@@ -301,7 +301,9 @@ function PastePanel({ project, onPaste }: { project: Project; onPaste: (answer: 
         const perPart = Math.max(2, Math.ceil(o.maxClips / chunks.length) + 1);
         return chunks.map((c, i) => chatPrompt(c.segments, c.events, { ...opts, maxClips: chunks.length > 1 ? perPart : o.maxClips }, { index: i, count: chunks.length }));
     }, [project.transcript, project.options]);
-    const [answers, setAnswers] = useState<string[]>(() => parts.map(() => ''));
+    const [rawAnswers, setAnswers] = useState<string[]>(() => parts.map(() => ''));
+    // one answer box per part, even if the number of parts changes (e.g. after redoing captions)
+    const answers = parts.map((_, i) => rawAnswers[i] ?? '');
     const [copied, setCopied] = useState<number | null>(null);
     const [err, setErr] = useState('');
     const [busy, setBusy] = useState(false);
@@ -385,7 +387,7 @@ function ReelPreview({ project, clips, video, brand, onClose, onOpen }: { projec
         return img;
     }, [brand.logo]);
     const clip = clips[i];
-    const groups = useMemo(() => groupWords(displayWords(project.transcript?.words ?? [], clip, project.style, project.speakers, false), project.style.wordsPerLine), [clip, project]);
+    const groups = useMemo(() => groupWords(displayWords(project.transcript?.words ?? [], clip, project.style, project.speakers, false), perLine(project.style)), [clip, project]);
     const size = outputSize(project.style.aspect, 540);
     const ref = useRef({ clip, groups, i });
     ref.current = { clip, groups, i };
@@ -406,7 +408,12 @@ function ReelPreview({ project, clips, video, brand, onClose, onOpen }: { projec
             if (v && c) {
                 const skip = skipCut(r.clip, v.currentTime);
                 if (skip !== v.currentTime) v.currentTime = skip;
-                if (v.currentTime >= r.clip.end) setI((x) => (x + 1 < clips.length ? x + 1 : x));
+                if (v.currentTime >= r.clip.end) {
+                    // next clip; after the last one, start the whole reel again instead of playing on into the raw video
+                    if (r.i + 1 < clips.length) setI(r.i + 1);
+                    else if (clips.length > 1) setI(0);
+                    else v.currentTime = r.clip.start;
+                }
                 drawScene(c.getContext('2d')!, v, v.currentTime, { clip: r.clip, style: project.style, brand, groups: r.groups, logo });
             }
             raf = requestAnimationFrame(loop);

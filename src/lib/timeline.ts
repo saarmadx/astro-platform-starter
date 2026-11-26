@@ -20,7 +20,7 @@ function legacySegments(clip: Clip): Seg[] {
     }
     if (clip.end > t) kept.push({ start: t, end: clip.end });
     // honour split points too, so each piece becomes its own part
-    const splits = (clip.splits ?? []).sort((a, b) => a - b);
+    const splits = [...(clip.splits ?? [])].sort((a, b) => a - b);
     const out: Seg[] = [];
     for (const k of kept) {
         let s = k.start;

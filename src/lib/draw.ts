@@ -486,10 +486,16 @@ function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
             ctx.scale(settle, settle);
             ctx.translate(-W / 2, -cy);
         }
+        if (tpl.tilt) {
+            // sticker look: each caption tilts the other way from the one before
+            ctx.translate(W / 2, cy);
+            ctx.rotate(((gi % 2 ? tpl.tilt : -tpl.tilt) * Math.PI) / 180);
+            ctx.translate(-W / 2, -cy);
+        }
         for (const ln of lines) {
             let x = (W - ln.width) / 2;
             if (tpl.lineBox) {
-                ctx.fillStyle = 'rgba(0,0,0,0.67)';
+                ctx.fillStyle = tpl.tape ?? 'rgba(0,0,0,0.67)';
                 roundRect(ctx, x - size * 0.3, y - size * 0.62, ln.width + size * 0.6, size * 1.24, size * 0.18);
                 ctx.fill();
             }
@@ -517,7 +523,24 @@ function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
                     roundRect(ctx, x - size * 0.18, y - size * 0.6, it.width + size * 0.36, size * 1.2, size * 0.2);
                     ctx.fill();
                 }
-                if (tpl.glow) {
+                if (tpl.rgbSplit) {
+                    // glitch: a red and a cyan copy just beside the word
+                    const off = Math.max(2, size * 0.06);
+                    ctx.save();
+                    ctx.globalAlpha = 0.69;
+                    ctx.fillStyle = '#ff2050';
+                    ctx.fillText(it.text, x - off, y);
+                    ctx.fillStyle = '#20e0ff';
+                    ctx.fillText(it.text, x + off, y);
+                    ctx.restore();
+                }
+                const highlighted = (active && (tpl.active === 'color' || tpl.active === 'underline')) || spoken || (it.w.kw && !boxed);
+                if (tpl.blockShadow) {
+                    // 3D block letters: a solid copy down and to the right
+                    ctx.shadowColor = tpl.blockShadow;
+                    ctx.shadowOffsetX = ctx.shadowOffsetY = Math.max(2, Math.round(size * 0.08));
+                    ctx.shadowBlur = 0;
+                } else if (tpl.glow) {
                     ctx.shadowColor = tpl.glow;
                     ctx.shadowBlur = size * 0.45;
                 } else if (tpl.shadow) {
@@ -525,13 +548,22 @@ function drawCaptions(ctx: CanvasRenderingContext2D, t: number, s: Scene) {
                     ctx.shadowOffsetY = size * 0.05;
                     ctx.shadowBlur = size * 0.08;
                 }
+                const lit = highlighted || active;
+                if (tpl.hollow && !lit) {
+                    // outline only: the word is drawn as its edge, in its own colour
+                    ctx.strokeStyle = it.w.color;
+                    ctx.lineWidth = tpl.outline * size * 2;
+                    ctx.strokeText(it.text, x, y);
+                    ctx.restore();
+                    x += it.width + space;
+                    continue;
+                }
                 if (tpl.outline > 0 && !boxed) {
-                    ctx.strokeStyle = tpl.outlineColor ?? '#000';
+                    ctx.strokeStyle = tpl.hollow ? '#000' : tpl.outlineColor ?? '#000';
                     ctx.lineWidth = tpl.outline * size * 2;
                     ctx.strokeText(it.text, x, y);
                     if (!tpl.glow) ctx.shadowColor = 'transparent';
                 }
-                const highlighted = (active && (tpl.active === 'color' || tpl.active === 'underline')) || spoken || (it.w.kw && !boxed);
                 ctx.fillStyle = boxed && tpl.boxText ? tpl.boxText : highlighted ? s.style.highlight : it.w.color;
                 ctx.fillText(it.text, x, y);
                 if (active && tpl.active === 'underline') {
